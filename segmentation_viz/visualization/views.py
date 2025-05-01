@@ -194,6 +194,7 @@ def update_points(request):
                 [p1["x"], p1["y"], p1["z"]],
                 [p2["x"], p2["y"], p2["z"]],
             ])
+            
         elif action == "delete_arrow":
             p1 = data.get("p1")
             p2 = data.get("p2")
@@ -206,6 +207,18 @@ def update_points(request):
                         coordinates_match(arrow[1], p2["x"], p2["y"], p2["z"])):
                         point_obj["arrows"].pop(i)
                         break
+                    
+        elif action == "add_screw":
+            # expects data: x,y,z plus dir_x,dir_y,dir_z each ∈ {-1,0,+1}
+            if "screws" not in point_obj:
+                point_obj["screws"] = []
+            coords = [
+                data["x"], data["y"], data["z"],
+                data["dir_x"], data["dir_y"], data["dir_z"]
+            ]
+            if coords not in point_obj["screws"]:
+                point_obj["screws"].append(coords)
+            
         else:
             return HttpResponseBadRequest("Unknown action")
         

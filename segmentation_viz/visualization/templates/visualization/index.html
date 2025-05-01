@@ -10,24 +10,20 @@
       href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap"
       rel="stylesheet"
     />
-
-      <link
-      rel="stylesheet"
-      href="{% static 'css/visualization.css' %}"
-    />
-    <!-- Include Plotly -->
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <!-- Your custom CSS -->
+    <link rel="stylesheet" href="{% static 'css/visualization.css' %}" />
     <!-- Font Awesome for Icons -->
     <link
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css"
     />
-    
+    <!-- Plotly.js -->
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
   </head>
-  
+
   <body>
     <div class="visualization-container">
-      <!-- Dropdowns for Object and Batch -->
+      <!-- Top controls: dropdowns + mode toggle -->
       <div class="dropdown-container">
         <div class="dropdown-wrapper">
           <label for="class-dropdown">Object</label>
@@ -37,9 +33,19 @@
           <label for="batch-dropdown">Batch</label>
           <select id="batch-dropdown" class="dropdown"></select>
         </div>
+        <div class="mode-toggle">
+          <label>
+            <input type="radio" name="mode" value="segment" />
+            Segment Mode
+          </label>
+          <label>
+            <input type="radio" name="mode" value="screw" checked />
+            Screw Mode
+          </label>
+        </div>
       </div>
 
-      <!-- Depth slider, assign/delete buttons, and part dropdown -->
+      <!-- Segment-mode controls (hidden in Screw) -->
       <div class="slider-container">
         <label for="depth-slider">Depth (z):</label>
         <input
@@ -65,487 +71,800 @@
         </div>
       </div>
 
-      <div id="visualization"></div>
+      <!-- Screw-mode controls (hidden in Segment) -->
+      <div id="screw-dropdown-container" style="margin-bottom: 12px;" class="dropdown-wrapper">
+        <label for="screw-dropdown">Screw</label>
+        <select id="screw-dropdown" class="dropdown"> 
+          <!-- Options will be populated dynamically -->
+        </select>
+      </div>
+      
+
+      <!-- Plotly visualization and overlays -->
+      <div id="visualization" style="width: 100%; height: 600px"></div>
       <div id="coord-overlay">x: --, y: --, z: --</div>
       <div id="status-message"></div>
 
-      <!-- Help icon and tooltip -->
+      <!-- Help icon & tooltip -->
       <div class="help-icon">
         <i class="fas fa-question"></i>
       </div>
       <div class="help-tooltip">
         <strong>Instructions:</strong>
         <ul>
-          <li>Double-click on the plot to add a new point</li>
-          <li>The depth slider sets the z-coordinate</li>
+          <ul>
+            <li>Double-click on the plot to add a new point</li>
+            <li>The depth slider sets the z-coordinate</li>
+            <li>
+              New points are labeled "Custom Point", appear in red, and have
+              part_label -1
+            </li>
+            <li>
+              Click on a custom point to select it (only custom points – those
+              with a "custom" flag – are modifiable)
+            </li>
+            <li>
+              Click "Delete Selected Point" to remove the selected custom point
+            </li>
+            <li>
+              Use the "Assign to Part" dropdown and click "Assign Selected Point"
+              to reassign the custom point; its part_label is then updated (stored
+              as an integer) while the "custom" flag persists
+            </li>
+            <li>
+              Click two points (loaded or custom) in sequence to draw an arrow
+              between them
+            </li>
+          <li>Select an object and batch from the dropdowns</li>
+          <li>Click on any point to add a directional arrow</li>
           <li>
-            New points are labeled "Custom Point", appear in red, and have
-            part_label -1
+            Choose a direction (+X, -X, +Y, -Y, +Z, -Z) from the popup menu
           </li>
-          <li>
-            Click on a custom point to select it (only custom points – those
-            with a "custom" flag – are modifiable)
-          </li>
-          <li>
-            Click "Delete Selected Point" to remove the selected custom point
-          </li>
-          <li>
-            Use the "Assign to Part" dropdown and click "Assign Selected Point"
-            to reassign the custom point; its part_label is then updated (stored
-            as an integer) while the "custom" flag persists
-          </li>
-          <li>
-            Click two points (loaded or custom) in sequence to draw an arrow
-            between them
-          </li>
+          <li>To change the arrow direction, click on another point</li>
+          <li>The arrow represents the axis direction for the screw</li>
         </ul>
       </div>
     </div>
 
     <script>
-      // --- Global Variables ---
-      var mapping = JSON.parse("{{ mapping_json|escapejs }}");
-      var classDropdown = document.getElementById("class-dropdown");
-      var batchDropdown = document.getElementById("batch-dropdown");
-      var partDropdown = document.getElementById("part-dropdown");
-      var selectedPartLabel = null;
-    
-      // Plotly viz element
-      var viz = null;
-    
-      // Store coordinates of selected custom point.
-      var selectedX = null,
+      // Global mapping normalization
+      const rawMapping = JSON.parse("{{ mapping_json|escapejs }}");
+      const mapping = {};
+      Object.entries(rawMapping).forEach(([k, v]) => {
+        const key = k.toLowerCase();
+        mapping[key] = (mapping[key] || []).concat(v);
+      });
+      Object.keys(mapping).forEach((k) => {
+        mapping[k] = Array.from(new Set(mapping[k]));
+      });
+
+      // helper to hide/show segment-mode controls
+      function toggleSegmentUI(show) {
+        document
+          .querySelectorAll(
+            ".slider-container, .part-selection, #delete-button, #assign-button, #delete-arrow-button"
+          )
+          .forEach((el) => (el.style.display = show ? "" : "none"));
+      }
+
+      function toggleScrewUI(show) {
+        document
+          .getElementById('screw-dropdown-container')
+          .style.display = show ? '' : 'none';
+      }
+
+      const vizDiv = document.getElementById("visualization");
+      let viz = null,
+        currentPopup = null;
+      let statusMsg = document.getElementById("status-message");
+      let coordOverlay = document.getElementById("coord-overlay");
+
+      // reuse Segment-mode color map
+      function getColorForPart(partLabel) {
+        const colors = [
+          "#1f77b4",
+          "#ff7f0e",
+          "#2ca02c",
+          "#9467bd",
+          "#8c564b",
+          "#e377c2",
+          "#7f7f7f",
+          "#bcbd22",
+          "#17becf",
+          "#393b79",
+          "#637939",
+          "#8c6d31",
+          "#843c39",
+          "#7b4173",
+          "#3182bd",
+          "#31a354",
+          "#e6550d",
+          "#756bb1",
+          "#636363",
+        ];
+        const idx = parseInt(partLabel) % colors.length;
+        return isNaN(idx) ? colors[0] : colors[idx];
+      }
+
+      // ----------------------------------------------------------------
+      // Screw Mode Implementation (fully self‐contained helpers)
+      // ----------------------------------------------------------------
+      function initScrewMode() {
+        console.log("✅ Screw mode enabled");
+        toggleSegmentUI(false);
+        toggleScrewUI(true);
+        Plotly.purge(vizDiv);
+        if (currentPopup) {
+          currentPopup.remove();
+          currentPopup = null;
+        }
+
+        // Keep track of the current arrow
+        let arrowTraceIndex = null;
+        let currentPoint = null;
+
+        function getUnitVector(dir) {
+          const scale = 1; // Make arrows more visible
+          switch (dir) {
+            case "+X":
+              return { x: scale, y: 0, z: 0 };
+            case "-X":
+              return { x: -scale, y: 0, z: 0 };
+            case "+Y":
+              return { x: 0, y: scale, z: 0 };
+            case "-Y":
+              return { x: 0, y: -scale, z: 0 };
+            case "+Z":
+              return { x: 0, y: 0, z: scale };
+            case "-Z":
+              return { x: 0, y: 0, z: -scale };
+            default:
+              return { x: scale, y: 0, z: 0 };
+          }
+        }
+
+        function getScrewSigns(vec) {
+          return {
+            dir_x: Math.sign(vec.x),
+            dir_y: Math.sign(vec.y),
+            dir_z: Math.sign(vec.z)
+          };
+        }
+  
+        function drawUnitArrow(point, vec) {
+          // 1) delete any old arrow
+          if (arrowTraceIndex !== null) {
+            try {
+              Plotly.deleteTraces(vizDiv, arrowTraceIndex);
+            } catch (e) {
+              console.warn("Error removing previous arrow:", e);
+            }
+          }
+
+          // 2) draw the new arrow
+          Plotly.addTraces(vizDiv, {
+            x: [point.x, point.x + vec.x],
+            y: [point.y, point.y + vec.y],
+            z: [point.z, point.z + vec.z],
+            mode: "lines",
+            type: "scatter3d",
+            line: { width: 8, color: "red" },
+            showlegend: false,
+            hoverinfo: "none"
+          });
+          arrowTraceIndex = vizDiv.data.length - 1;
+
+          // 3) compute ±1/0 signs here
+          const signs = {
+            dir_x: Math.sign(vec.x),
+            dir_y: Math.sign(vec.y),
+            dir_z: Math.sign(vec.z)
+          };
+
+          // 4) POST your new screw into the backend
+          fetch("/update_points/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "add_screw",
+              data: {
+                cls_label: clsD.value,
+                batch_num: batchD.value,
+                x:         point.x,
+                y:         point.y,
+                z:         point.z,
+                dir_x:     signs.dir_x,
+                dir_y:     signs.dir_y,
+                dir_z:     signs.dir_z
+              }
+            })
+          }).catch(console.error);
+
+          // 5) update your UI status if you like
+          statusMsg.textContent = `Screw added at (${point.x.toFixed(2)}, ${point.y.toFixed(2)}, ${point.z.toFixed(2)}) ↦ [${signs.dir_x},${signs.dir_y},${signs.dir_z}]`;
+        }
+
+        // Modified to use mouse event from document
+        function showDirectionMenu(point, clientX, clientY) {
+          if (currentPopup) {
+            currentPopup.remove();
+          }
+
+          const pop = document.createElement("div");
+          pop.className = "dir-popup";
+          Object.assign(pop.style, {
+            position: "absolute",
+            left: `${clientX}px`,
+            top: `${clientY}px`,
+            background: "#fff",
+            border: "1px solid #888",
+            padding: "10px",
+            borderRadius: "4px",
+            zIndex: 1000,
+            boxShadow: "0 2px 10px rgba(0,0,0,0.2)",
+          });
+
+          const directions = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"];
+
+          // Title for menu
+          const title = document.createElement("div");
+          title.textContent = "Select arrow direction:";
+          title.style.marginBottom = "8px";
+          title.style.fontWeight = "bold";
+          pop.appendChild(title);
+
+          // Create grid container for buttons
+          const grid = document.createElement("div");
+          grid.style.display = "grid";
+          grid.style.gridTemplateColumns = "repeat(2, 1fr)";
+          grid.style.gap = "5px";
+
+          directions.forEach((dir) => {
+            const btn = document.createElement("button");
+            btn.textContent = dir;
+            btn.style.padding = "5px 10px";
+            btn.style.cursor = "pointer";
+
+            btn.onclick = () => {
+              const vec = getUnitVector(dir);
+              currentPoint = point;
+              drawUnitArrow(point, vec);
+              pop.remove();
+              currentPopup.remove();
+              currentPopup = null;
+            };
+
+            grid.appendChild(btn);
+          });
+
+          pop.appendChild(grid);
+          document.body.appendChild(pop);
+          currentPopup = pop;
+        }
+
+        // dropdown refs
+        const clsD = document.getElementById("class-dropdown");
+        const batchD = document.getElementById("batch-dropdown");
+
+        // populate class dropdown
+        clsD.innerHTML = "";
+        Object.keys(mapping)
+          .sort()
+          .forEach((c) => {
+            const o = document.createElement("option");
+            o.value = o.text = c;
+            clsD.appendChild(o);
+          });
+
+        clsD.onchange = updateBatches;
+        batchD.onchange = loadPlot;
+
+        // Initial population
+        updateBatches();
+
+        function updateBatches() {
+          const selectedClass = clsD.value;
+          batchD.innerHTML = "";
+          const batches = mapping[selectedClass] || [];
+
+          if (batches.length === 0) {
+            const o = document.createElement("option");
+            o.value = "";
+            o.text = "No batches available";
+            batchD.appendChild(o);
+          } else {
+            batches.forEach((b) => {
+              const o = document.createElement("option");
+              o.value = o.text = b;
+              batchD.appendChild(o);
+            });
+          }
+
+          // Load the plot with the first batch
+          loadPlot();
+        }
+
+        function loadPlot() {
+            const selectedClass = clsD.value;
+            const selectedBatch = batchD.value;
+
+            if (!selectedClass || !selectedBatch) {
+              vizDiv.innerHTML =
+                '<div style="padding: 20px; text-align: center;">Please select a valid object and batch</div>';
+              return;
+            }
+
+            statusMsg.textContent = "Loading data…";
+
+            // remove any existing arrow trace
+            if (arrowTraceIndex !== null) {
+              try {
+                Plotly.deleteTraces(vizDiv, arrowTraceIndex);
+                arrowTraceIndex = null;
+              } catch (e) {}
+            }
+
+            fetch(`/api/points/${selectedClass}/${selectedBatch}/?_=${Date.now()}`)
+              .then(res => {
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return res.json();
+              })
+              .then(json => {
+                const entry   = json[0];
+                const pts     = entry.coordinates;
+                const labels  = entry.part_label;
+                const screws  = entry.screws || [];
+
+                // 1) populate the screws dropdown
+                const screwD = document.getElementById("screw-dropdown");
+                screwD.innerHTML = "";
+
+                const placeholder = document.createElement("option");
+                placeholder.value    = "";
+                placeholder.text     = "Select a screw";
+                placeholder.disabled = true;
+                placeholder.selected = true;
+                screwD.appendChild(placeholder);
+
+                screws.forEach((screw, i) => {
+                  const opt = document.createElement("option");
+                  opt.value = i;
+                  opt.text  = `screw${i}`;
+                  screwD.appendChild(opt);
+                });
+                screwD.onchange = () => {
+                  const i = +screwD.value;
+                  const [ x, y, z, dir_x, dir_y, dir_z ] = screws[i];
+                  drawUnitArrow({ x, y, z }, { x:dir_x, y:dir_y, z:dir_z });
+                  statusMsg.textContent = `Showing screw${i}`;
+                };
+
+                // 2) group coordinates by part_label and build traces
+                const groups = {};
+                labels.forEach((lbl, i) => {
+                  if (!groups[lbl]) groups[lbl] = { x:[], y:[], z:[] };
+                  const [x,y,z] = pts[i];
+                  groups[lbl].x.push(x);
+                  groups[lbl].y.push(y);
+                  groups[lbl].z.push(z);
+                });
+                const traces = Object.keys(groups).sort((a,b)=>a-b).map(lbl => ({
+                  x: groups[lbl].x,
+                  y: groups[lbl].y,
+                  z: groups[lbl].z,
+                  mode: "markers",
+                  type: "scatter3d",
+                  name: "Part " + lbl,
+                  marker: { size:5, opacity:0.8, color:getColorForPart(lbl) },
+                  hoverinfo: "x+y+z"
+                }));
+
+                // 3) redraw the plot
+                const layout = {
+                  scene: {
+                    xaxis:{ range:[-10,10], title:"X" },
+                    yaxis:{ range:[-10,10], title:"Y" },
+                    zaxis:{ range:[-10,10], title:"Z" }
+                  },
+                  margin:{l:0,r:0,t:0,b:0},
+                  hovermode:"closest",
+                  legend:{
+                    x:0, y:1,
+                    xanchor:"left", yanchor:"top",
+                    bgcolor:"rgba(255,255,255,0.7)"
+                  }
+                };
+                Plotly.newPlot(vizDiv, traces, layout, { responsive:true });
+
+                // 4) re-attach click & hover handlers for new plot
+                let lastX=0, lastY=0;
+                document.addEventListener("mousemove", e => {
+                  lastX=e.clientX; lastY=e.clientY;
+                });
+                vizDiv.on("plotly_click", pts => {
+                  const p = pts.points[0];
+                  showDirectionMenu({x:p.x,y:p.y,z:p.z}, lastX, lastY);
+                });
+                vizDiv.on("plotly_hover", pts => {
+                  const p = pts.points[0];
+                  coordOverlay.textContent = `x:${p.x.toFixed(2)}, y:${p.y.toFixed(2)}, z:${p.z.toFixed(2)}`;
+                });
+
+                statusMsg.textContent = "Data loaded. Click a point to add a screw.";
+              })
+              .catch(err => {
+                console.error("Error loading data:", err);
+                vizDiv.innerHTML = `<div style="padding:20px;text-align:center;color:red;">Error: ${err.message}</div>`;
+                statusMsg.textContent = "Loading failed.";
+              });
+          }
+
+        // Load the initial plot
+        loadPlot();
+      
+      }
+      
+      // ----------------------------------------------------------------
+      // Segment Mode Stub
+      // ----------------------------------------------------------------
+      function initSegmentMode() {
+        console.log("✅ Segment mode enabled");
+        toggleSegmentUI(true);
+        toggleScrewUI(false);
+        // ... paste your full Segment-mode code here ...
+        var mapping = JSON.parse("{{ mapping_json|escapejs }}");
+        var classDropdown = document.getElementById("class-dropdown");
+        var batchDropdown = document.getElementById("batch-dropdown");
+        var partDropdown = document.getElementById("part-dropdown");
+        var selectedPartLabel = null;
+
+        // Plotly viz element
+        var viz = null;
+
+        // Store coordinates of selected custom point.
+        var selectedX = null,
           selectedY = null,
           selectedZ = null;
-    
-      // --- Arrow drawing & selection globals ---
-      var arrowPoints = [];
-      var arrowTraceIndex = null;            // Index of the arrow trace
-      var isDrawingArrow = false;            // Flag for drawing mode
-      var selectedArrowP1 = null;            // Endpoint 1 of selected arrow
-      var selectedArrowP2 = null;            // Endpoint 2 of selected arrow
-      var selectedArrowSegmentIndex = null;  // Which arrow segment (0-based) is selected
-    
-      function initializeArrowTrace(vizEl) {
-        if (arrowTraceIndex !== null) return;
-        Plotly.addTraces(vizEl, {
-          x: [], y: [], z: [],
-          mode: "lines",
-          type: "scatter3d",
-          name: "Arrows",
-          line: { width: 3, color: "black" },
-          showlegend: true,
-        });
-        arrowTraceIndex = vizEl.data.length - 1;
-      }
-    
-      function drawArrow(vizEl, p1, p2) {
-        if (arrowTraceIndex === null) initializeArrowTrace(vizEl);
-        var current = vizEl.data[arrowTraceIndex];
-        var newX = (current.x || []).concat([p1.x, p2.x, null]);
-        var newY = (current.y || []).concat([p1.y, p2.y, null]);
-        var newZ = (current.z || []).concat([p1.z, p2.z, null]);
-        Plotly.restyle(vizEl,
-          { x: [newX], y: [newY], z: [newZ] },
-          [arrowTraceIndex]
-        );
-      }
-    
-      // Populate class dropdown.
-      for (var cls in mapping) {
-        var option = document.createElement("option");
-        option.value = cls;
-        option.text = cls.charAt(0).toUpperCase() + cls.slice(1);
-        classDropdown.appendChild(option);
-      }
-    
-      // Update selectedPartLabel when the part dropdown changes.
-      partDropdown.addEventListener("change", function () {
-        selectedPartLabel = partDropdown.value;
-      });
-    
-      // Toggle help tooltip.
-      var helpIcon = document.querySelector(".help-icon");
-      var helpTooltip = document.querySelector(".help-tooltip");
-      helpIcon.addEventListener("click", function () {
-        helpTooltip.classList.toggle("visible");
-      });
-    
-      function updateBatchDropdown() {
-        batchDropdown.innerHTML = "";
-        var selectedClass = classDropdown.value;
-        if (mapping[selectedClass]) {
-          mapping[selectedClass].forEach(function (batchNum) {
-            var option = document.createElement("option");
-            option.value = batchNum;
-            option.text = batchNum;
-            batchDropdown.appendChild(option);
+
+        // --- Arrow drawing & selection globals ---
+        var arrowPoints = [];
+        var arrowTraceIndex = null; // Index of the arrow trace
+        var isDrawingArrow = false; // Flag for drawing mode
+        var selectedArrowP1 = null; // Endpoint 1 of selected arrow
+        var selectedArrowP2 = null; // Endpoint 2 of selected arrow
+        var selectedArrowSegmentIndex = null; // Which arrow segment (0-based) is selected
+
+        function initializeArrowTrace(vizEl) {
+          if (arrowTraceIndex !== null) return;
+          Plotly.addTraces(vizEl, {
+            x: [],
+            y: [],
+            z: [],
+            mode: "lines",
+            type: "scatter3d",
+            name: "Arrows",
+            line: { width: 3, color: "black" },
+            showlegend: true,
           });
+          arrowTraceIndex = vizEl.data.length - 1;
         }
-        loadAndPlot(classDropdown.value, batchDropdown.value);
-      }
-    
-      classDropdown.addEventListener("change", updateBatchDropdown);
-      batchDropdown.addEventListener("change", function () {
-        loadAndPlot(classDropdown.value, batchDropdown.value);
-      });
-      updateBatchDropdown();
-    
-      // Scene ranges.
-      var xRange = [-10, 10],
+
+        function drawArrow(vizEl, p1, p2) {
+          if (arrowTraceIndex === null) initializeArrowTrace(vizEl);
+          var current = vizEl.data[arrowTraceIndex];
+          var newX = (current.x || []).concat([p1.x, p2.x, null]);
+          var newY = (current.y || []).concat([p1.y, p2.y, null]);
+          var newZ = (current.z || []).concat([p1.z, p2.z, null]);
+          Plotly.restyle(vizEl, { x: [newX], y: [newY], z: [newZ] }, [
+            arrowTraceIndex,
+          ]);
+        }
+
+        // Update selectedPartLabel when the part dropdown changes.
+        partDropdown.addEventListener("change", function () {
+          selectedPartLabel = partDropdown.value;
+        });
+
+        // Toggle help tooltip.
+        var helpIcon = document.querySelector(".help-icon");
+        var helpTooltip = document.querySelector(".help-tooltip");
+        helpIcon.addEventListener("click", function () {
+          helpTooltip.classList.toggle("visible");
+        });
+
+        function updateBatchDropdown() {
+          batchDropdown.innerHTML = "";
+          var selectedClass = classDropdown.value;
+          if (mapping[selectedClass]) {
+            mapping[selectedClass].forEach(function (batchNum) {
+              var option = document.createElement("option");
+              option.value = batchNum;
+              option.text = batchNum;
+              batchDropdown.appendChild(option);
+            });
+          }
+          loadAndPlot(classDropdown.value, batchDropdown.value);
+        }
+
+        classDropdown.addEventListener("change", updateBatchDropdown);
+        batchDropdown.addEventListener("change", function () {
+          loadAndPlot(classDropdown.value, batchDropdown.value);
+        });
+        updateBatchDropdown();
+
+        // Scene ranges.
+        var xRange = [-10, 10],
           yRange = [-10, 10],
           zRange = [-10, 10];
-    
-      // Global variables for new points.
-      var newPointsData = { x: [], y: [], z: [], text: [] };
-      var newPointsTraceIndex = null;
-      var selectedTraceIndex = null;
-      var selectedPointIndex = null;
-    
-      // Mapping for loaded parts and original counts.
-      var loadedPartTraceIndex = {};
-      var loadedOrigCount = {};
-    
-      function showStatus(message, duration = 3000) {
-        var statusElement = document.getElementById("status-message");
-        statusElement.textContent = message;
-        statusElement.style.display = "block";
-        setTimeout(function () {
-          statusElement.style.display = "none";
-        }, duration);
-      }
-    
-      var depthSlider = document.getElementById("depth-slider");
-      var depthValueDisplay = document.getElementById("depth-value");
-      depthSlider.addEventListener("input", function () {
-        depthValueDisplay.textContent = parseFloat(depthSlider.value).toFixed(2);
-      });
-    
-      function getColorForPart(partLabel) {
-        var colors = [
-          "#1f77b4", "#ff7f0e", "#2ca02c", "#9467bd", "#8c564b",
-          "#e377c2", "#7f7f7f", "#bcbd22", "#17becf", "#393b79",
-          "#637939", "#8c6d31", "#843c39", "#7b4173", "#3182bd",
-          "#31a354", "#e6550d", "#756bb1", "#636363"
-        ];
-        var index = parseInt(partLabel) % colors.length;
-        if (isNaN(index)) index = 0;
-        return colors[index];
-      }
-    
-      function updatePartDropdown(availableParts) {
-        partDropdown.innerHTML = "";
-        availableParts.forEach(function (part) {
-          var opt = document.createElement("option");
-          opt.value = part;
-          opt.text = "Part " + part;
-          partDropdown.appendChild(opt);
-        });
-        if (availableParts.length > 0) {
-          selectedPartLabel = availableParts[0];
-          partDropdown.value = selectedPartLabel;
+
+        // Global variables for new points.
+        var newPointsData = { x: [], y: [], z: [], text: [] };
+        var newPointsTraceIndex = null;
+        var selectedTraceIndex = null;
+        var selectedPointIndex = null;
+
+        // Mapping for loaded parts and original counts.
+        var loadedPartTraceIndex = {};
+        var loadedOrigCount = {};
+
+        function showStatus(message, duration = 3000) {
+          var statusElement = document.getElementById("status-message");
+          statusElement.textContent = message;
+          statusElement.style.display = "block";
+          setTimeout(function () {
+            statusElement.style.display = "none";
+          }, duration);
         }
-      }
-    
-      function updateNewPointsFile(action, data) {
-        fetch("/update_points/", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: action, data: data }),
-        }).catch(console.error);
-      }
-    
-      function clearSelection() {
-        selectedTraceIndex = null;
-        selectedPointIndex = null;
-        selectedX = selectedY = selectedZ = null;
-        // clear arrow-point drawing state if any
-        arrowPoints = [];
-        isDrawingArrow = false;
-      }
-    
-      function loadAndPlot(className, batchNum) {
-        var fileName = className + "_" + batchNum + "_points.json";
-        var fileUrl = `/api/points/${className}/${batchNum}/?_=${Date.now()}`;
-    
-        fetch(fileUrl)
-          .then(function (response) {
-            if (!response.ok) throw new Error("Network response was not ok");
-            return response.json();
-          })
-          .then(function (jsonData) {
-            console.log("Loaded JSON data:", jsonData);
-            var dataEntry = jsonData[0],
+
+        var depthSlider = document.getElementById("depth-slider");
+        var depthValueDisplay = document.getElementById("depth-value");
+        depthSlider.addEventListener("input", function () {
+          depthValueDisplay.textContent = parseFloat(depthSlider.value).toFixed(
+            2
+          );
+        });
+
+        function getColorForPart(partLabel) {
+          var colors = [
+            "#1f77b4",
+            "#ff7f0e",
+            "#2ca02c",
+            "#9467bd",
+            "#8c564b",
+            "#e377c2",
+            "#7f7f7f",
+            "#bcbd22",
+            "#17becf",
+            "#393b79",
+            "#637939",
+            "#8c6d31",
+            "#843c39",
+            "#7b4173",
+            "#3182bd",
+            "#31a354",
+            "#e6550d",
+            "#756bb1",
+            "#636363",
+          ];
+          var index = parseInt(partLabel) % colors.length;
+          if (isNaN(index)) index = 0;
+          return colors[index];
+        }
+
+        function updatePartDropdown(availableParts) {
+          partDropdown.innerHTML = "";
+          availableParts.forEach(function (part) {
+            var opt = document.createElement("option");
+            opt.value = part;
+            opt.text = "Part " + part;
+            partDropdown.appendChild(opt);
+          });
+          if (availableParts.length > 0) {
+            selectedPartLabel = availableParts[0];
+            partDropdown.value = selectedPartLabel;
+          }
+        }
+
+        function updateNewPointsFile(action, data) {
+          fetch("/update_points/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: action, data: data }),
+          }).catch(console.error);
+        }
+
+        function clearSelection() {
+          selectedTraceIndex = null;
+          selectedPointIndex = null;
+          selectedX = selectedY = selectedZ = null;
+          // clear arrow-point drawing state if any
+          arrowPoints = [];
+          isDrawingArrow = false;
+        }
+
+        function loadAndPlot(className, batchNum) {
+          var fileName = className + "_" + batchNum + "_points.json";
+          var fileUrl = `/api/points/${className}/${batchNum}/?_=${Date.now()}`;
+
+          fetch(fileUrl)
+            .then(function (response) {
+              if (!response.ok) throw new Error("Network response was not ok");
+              return response.json();
+            })
+            .then(function (jsonData) {
+              var dataEntry = jsonData[0],
                 coordinates = dataEntry.coordinates,
                 partLabels = dataEntry.part_label;
-            
-            console.log("Loaded data:", dataEntry);
-            // Group loaded data by part.
-            var groups = {};
-            partLabels.forEach(function (label, i) {
-              if (!(label in groups)) {
-                groups[label] = { x: [], y: [], z: [] };
-              }
-              groups[label].x.push(coordinates[i][0]);
-              groups[label].y.push(coordinates[i][1]);
-              groups[label].z.push(coordinates[i][2]);
-            });
-    
-            var availableParts = Object.keys(groups).sort(function (a, b) {
-              return parseInt(a) - parseInt(b);
-            });
-            updatePartDropdown(availableParts);
-    
-            // Build loaded traces.
-            var traces = [];
-            loadedPartTraceIndex = {};
-            loadedOrigCount = {};
-            availableParts.forEach(function (part) {
-              var traceIndex = traces.length;
-              loadedPartTraceIndex[part] = traceIndex;
-              var origCount = groups[part].x.length;
-              loadedOrigCount[traceIndex] = origCount;
+              // Group loaded data by part.
+              var groups = {};
+              partLabels.forEach(function (label, i) {
+                if (!(label in groups)) {
+                  groups[label] = { x: [], y: [], z: [] };
+                }
+                groups[label].x.push(coordinates[i][0]);
+                groups[label].y.push(coordinates[i][1]);
+                groups[label].z.push(coordinates[i][2]);
+              });
+
+              var availableParts = Object.keys(groups).sort(function (a, b) {
+                return parseInt(a) - parseInt(b);
+              });
+              updatePartDropdown(availableParts);
+
+              // Build loaded traces.
+              var traces = [];
+              loadedPartTraceIndex = {};
+              loadedOrigCount = {};
+              availableParts.forEach(function (part) {
+                var traceIndex = traces.length;
+                loadedPartTraceIndex[part] = traceIndex;
+                var origCount = groups[part].x.length;
+                loadedOrigCount[traceIndex] = origCount;
+                traces.push({
+                  x: groups[part].x,
+                  y: groups[part].y,
+                  z: groups[part].z,
+                  mode: "markers",
+                  type: "scatter3d",
+                  name: "Part " + part,
+                  marker: {
+                    size: 5,
+                    opacity: 0.7,
+                    color: getColorForPart(part),
+                  },
+                  hoverinfo: "x+y+z",
+                });
+              });
+
+              // Custom points trace
+              newPointsData = { x: [], y: [], z: [], text: [] };
               traces.push({
-                x: groups[part].x,
-                y: groups[part].y,
-                z: groups[part].z,
+                x: newPointsData.x,
+                y: newPointsData.y,
+                z: newPointsData.z,
+                text: newPointsData.text,
                 mode: "markers",
                 type: "scatter3d",
-                name: "Part " + part,
-                marker: { size: 5, opacity: 0.7, color: getColorForPart(part) },
-                hoverinfo: "x+y+z",
+                name: "New Points",
+                marker: { size: 10, color: "red" },
+                textposition: "top center",
+                textfont: { size: 0 },
+                hoverinfo: "x+y+z+text",
               });
-            });
-    
-            // Custom points trace
-            newPointsData = { x: [], y: [], z: [], text: [] };
-            traces.push({
-              x: newPointsData.x,
-              y: newPointsData.y,
-              z: newPointsData.z,
-              text: newPointsData.text,
-              mode: "markers",
-              type: "scatter3d",
-              name: "New Points",
-              marker: { size: 10, color: "red" },
-              textposition: "top center",
-              textfont: { size: 0 },
-              hoverinfo: "x+y+z+text",
-            });
-            newPointsTraceIndex = traces.length - 1;
-    
-            var layout = {
-              paper_bgcolor: "white",
-              plot_bgcolor: "white",
-              scene: {
-                xaxis: { title: "X Coordinate", range: xRange, gridcolor: "#ccc" },
-                yaxis: { title: "Y Coordinate", range: yRange, gridcolor: "#ccc" },
-                zaxis: { title: "Z Coordinate", range: zRange, gridcolor: "#ccc" },
-                bgcolor: "white",
-                camera: {
-                  eye: { x: 1.5, y: 1.5, z: 1.5 },
-                  center: { x: 0, y: 0, z: 0 },
-                  up: { x: 0, y: 0, z: 1 },
+              newPointsTraceIndex = traces.length - 1;
+
+              var layout = {
+                paper_bgcolor: "white",
+                plot_bgcolor: "white",
+                scene: {
+                  xaxis: {
+                    title: "X Coordinate",
+                    range: xRange,
+                    gridcolor: "#ccc",
+                  },
+                  yaxis: {
+                    title: "Y Coordinate",
+                    range: yRange,
+                    gridcolor: "#ccc",
+                  },
+                  zaxis: {
+                    title: "Z Coordinate",
+                    range: zRange,
+                    gridcolor: "#ccc",
+                  },
+                  bgcolor: "white",
+                  camera: {
+                    eye: { x: 1.5, y: 1.5, z: 1.5 },
+                    center: { x: 0, y: 0, z: 0 },
+                    up: { x: 0, y: 0, z: 1 },
+                  },
                 },
-              },
-              margin: { l: 0, r: 0, b: 0, t: 0 },
-              clickmode: "event+select",
-              legend: {
-                x: 0, xanchor: "left", y: 0.98,
-                bgcolor: "rgba(255,255,255,0.7)",
-                bordercolor: "#ccc", borderwidth: 1,
-              },
-            };
-    
-            Plotly.newPlot("visualization", traces, layout, {
-              responsive: true,
-              displayModeBar: true,
-            }).then(function () {
-              viz = document.getElementById("visualization");
-    
-              // Reset arrow & selection state
-              arrowTraceIndex = null;
-              arrowPoints = [];
-              isDrawingArrow = false;
-              selectedArrowP1 = selectedArrowP2 = null;
-              selectedArrowSegmentIndex = null;
-              clearSelection();
-    
-              // Draw existing arrows
-              var existingArrows = dataEntry.arrows || [];
-              console.log("Existing arrows:", existingArrows);
-              if (existingArrows.length) {
-                initializeArrowTrace(viz);
-                existingArrows.forEach(function (arrow) {
-                  drawArrow(viz,
-                    { x: arrow[0][0], y: arrow[0][1], z: arrow[0][2] },
-                    { x: arrow[1][0], y: arrow[1][1], z: arrow[1][2] }
-                  );
-                });
-              }
-    
-              // Mousemove → update overlay coords
-              var overlay = document.getElementById("coord-overlay");
-              viz.onmousemove = function (e) {
-                var rect = viz.getBoundingClientRect();
-                var xCoord = xRange[0] + ((e.clientX - rect.left) / rect.width) * (xRange[1] - xRange[0]);
-                var yCoord = yRange[1] - ((e.clientY - rect.top) / rect.height) * (yRange[1] - yRange[0]);
-                overlay.textContent =
-                  "x: " + xCoord.toFixed(2) +
-                  ", y: " + yCoord.toFixed(2) +
-                  ", z: " + parseFloat(depthSlider.value).toFixed(2);
+                margin: { l: 0, r: 0, b: 0, t: 0 },
+                clickmode: "event+select",
+                legend: {
+                  x: 0,
+                  xanchor: "left",
+                  y: 0.98,
+                  bgcolor: "rgba(255,255,255,0.7)",
+                  bordercolor: "#ccc",
+                  borderwidth: 1,
+                },
               };
-    
-              // Double-click → add new custom point
-              viz.ondblclick = function (e) {
-                e.preventDefault();
-                e.stopPropagation();
-                clearSelection();
+
+              Plotly.newPlot("visualization", traces, layout, {
+                responsive: true,
+                displayModeBar: true,
+              }).then(function () {
+                viz = document.getElementById("visualization");
+
+                // Reset arrow & selection state
+                arrowTraceIndex = null;
                 arrowPoints = [];
                 isDrawingArrow = false;
-    
-                var rect = viz.getBoundingClientRect();
-                var xCoord = xRange[0] + ((e.clientX - rect.left) / rect.width) * (xRange[1] - xRange[0]);
-                var yCoord = yRange[1] - ((e.clientY - rect.top) / rect.height) * (yRange[1] - yRange[0]);
-                var zCoord = parseFloat(depthSlider.value);
-    
-                newPointsData.x.push(xCoord);
-                newPointsData.y.push(yCoord);
-                newPointsData.z.push(zCoord);
-                newPointsData.text.push("Custom Point");
-    
-                Plotly.restyle(viz,
-                  {
-                    x: [newPointsData.x],
-                    y: [newPointsData.y],
-                    z: [newPointsData.z],
-                    text: [newPointsData.text],
-                  },
-                  [newPointsTraceIndex]
-                ).then(function () {
-                  showStatus(
-                    "Added custom point at (" +
-                      xCoord.toFixed(2) + ", " +
-                      yCoord.toFixed(2) + ", " +
-                      zCoord.toFixed(2) + ")."
-                  );
-                  updateNewPointsFile("append", {
-                    cls_label: classDropdown.value,
-                    batch_num: batchDropdown.value,
-                    x: xCoord, y: yCoord, z: zCoord
+                selectedArrowP1 = selectedArrowP2 = null;
+                selectedArrowSegmentIndex = null;
+                clearSelection();
+
+                // Draw existing arrows
+                var existingArrows = dataEntry.arrows || [];
+                if (existingArrows.length) {
+                  initializeArrowTrace(viz);
+                  existingArrows.forEach(function (arrow) {
+                    drawArrow(
+                      viz,
+                      { x: arrow[0][0], y: arrow[0][1], z: arrow[0][2] },
+                      { x: arrow[1][0], y: arrow[1][1], z: arrow[1][2] }
+                    );
                   });
-                });
-              };
-    
-              // Click → handle arrow drawing, point selection, and arrow selection
-              viz.on("plotly_click", function (eventData) {
-                var pt = eventData.points[0];
-                var curve = pt.curveNumber, idx = pt.pointNumber;
-    
-                // Arrow selection
-                if (arrowTraceIndex !== null && curve === arrowTraceIndex) {
-                  var arrX = viz.data[arrowTraceIndex].x,
-                      arrY = viz.data[arrowTraceIndex].y,
-                      arrZ = viz.data[arrowTraceIndex].z;
-                  var seg = Math.floor(idx / 3),
-                      base = seg * 3;
-                  selectedArrowP1 = { x: arrX[base],   y: arrY[base],   z: arrZ[base]   };
-                  selectedArrowP2 = { x: arrX[base+1], y: arrY[base+1], z: arrZ[base+1] };
-                  selectedArrowSegmentIndex = seg;
-                  showStatus(
-                    "Arrow selected from (" +
-                      selectedArrowP1.x.toFixed(2) + ", " +
-                      selectedArrowP1.y.toFixed(2) + ", " +
-                      selectedArrowP1.z.toFixed(2) +
-                    ") to (" +
-                      selectedArrowP2.x.toFixed(2) + ", " +
-                      selectedArrowP2.y.toFixed(2) + ", " +
-                      selectedArrowP2.z.toFixed(2) +
-                    ")."
-                  );
-                  return;
                 }
-    
-                // Existing arrow-drawing logic...
-                var currentPt = { x: pt.x, y: pt.y, z: pt.z };
-    
-                // If in arrow-drawing mode, complete arrow
-                if (arrowPoints.length === 1) {
-                  arrowPoints.push(currentPt);
-                  var p1 = arrowPoints[0], p2 = arrowPoints[1];
-                  drawArrow(viz, p1, p2);
-                  updateNewPointsFile("add_arrow", {
-                    cls_label: classDropdown.value,
-                    batch_num: batchDropdown.value,
-                    p1: p1, p2: p2
-                  });
-                  showStatus(
-                    "Arrow added from (" +
-                      p1.x.toFixed(2) + ", " +
-                      p1.y.toFixed(2) + ", " +
-                      p1.z.toFixed(2) +
-                    ") to (" +
-                      p2.x.toFixed(2) + ", " +
-                      p2.y.toFixed(2) + ", " +
-                      p2.z.toFixed(2) +
-                    ")"
-                  );
+
+                // Mousemove → update overlay coords
+                var overlay = document.getElementById("coord-overlay");
+                viz.onmousemove = function (e) {
+                  var rect = viz.getBoundingClientRect();
+                  var xCoord =
+                    xRange[0] +
+                    ((e.clientX - rect.left) / rect.width) *
+                      (xRange[1] - xRange[0]);
+                  var yCoord =
+                    yRange[1] -
+                    ((e.clientY - rect.top) / rect.height) *
+                      (yRange[1] - yRange[0]);
+                  overlay.textContent =
+                    "x: " +
+                    xCoord.toFixed(2) +
+                    ", y: " +
+                    yCoord.toFixed(2) +
+                    ", z: " +
+                    parseFloat(depthSlider.value).toFixed(2);
+                };
+
+                // Double-click → add new custom point
+                viz.ondblclick = function (e) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  clearSelection();
                   arrowPoints = [];
                   isDrawingArrow = false;
-                  return;
-                }
-    
-                // Otherwise, start arrow-drawing or point-selection
-                var isNew = pt.curveNumber === newPointsTraceIndex;
-                var isLoadedCustom = (curve < newPointsTraceIndex) && (idx >= loadedOrigCount[curve]);
-                var isCustomPoint = isNew || isLoadedCustom;
-    
-                if (isCustomPoint) {
-                  // select custom point for delete/reassign
-                  selectedTraceIndex = curve;
-                  selectedPointIndex = idx;
-                  selectedX = pt.x; selectedY = pt.y; selectedZ = pt.z;
-                  showStatus("Custom point selected. You can delete, reassign, or draw arrows.");
-    
-                  if (isLoadedCustom) {
-                    for (var part in loadedPartTraceIndex) {
-                      if (loadedPartTraceIndex[part] === curve) {
-                        partDropdown.value = part;
-                        selectedPartLabel = part;
-                        break;
-                      }
-                    }
-                  }
-    
-                  // initiate arrow drawing
-                  if (arrowPoints.length === 0) {
-                    arrowPoints.push(currentPt);
-                    isDrawingArrow = true;
-                  }
-                } else {
-                  // loaded point -> arrow start
-                  if (arrowPoints.length === 0) {
-                    arrowPoints.push(currentPt);
-                    isDrawingArrow = true;
-                    showStatus("First point selected for arrow. Click another point to complete the arrow.");
-                  } else {
-                    showStatus("Original loaded point; only usable for drawing arrows.");
-                  }
-                }
-              });
-    
-              // Delete custom-point button
-              document.getElementById("delete-button").addEventListener("click", function () {
-                if (selectedTraceIndex === null) {
-                  showStatus("No custom point selected for deletion.");
-                  return;
-                }
-                if (selectedTraceIndex === newPointsTraceIndex) {
-                  newPointsData.x.splice(selectedPointIndex, 1);
-                  newPointsData.y.splice(selectedPointIndex, 1);
-                  newPointsData.z.splice(selectedPointIndex, 1);
-                  newPointsData.text.splice(selectedPointIndex, 1);
-                  Plotly.restyle(viz,
+
+                  var rect = viz.getBoundingClientRect();
+                  var xCoord =
+                    xRange[0] +
+                    ((e.clientX - rect.left) / rect.width) *
+                      (xRange[1] - xRange[0]);
+                  var yCoord =
+                    yRange[1] -
+                    ((e.clientY - rect.top) / rect.height) *
+                      (yRange[1] - yRange[0]);
+                  var zCoord = parseFloat(depthSlider.value);
+
+                  newPointsData.x.push(xCoord);
+                  newPointsData.y.push(yCoord);
+                  newPointsData.z.push(zCoord);
+                  newPointsData.text.push("Custom Point");
+
+                  Plotly.restyle(
+                    viz,
                     {
                       x: [newPointsData.x],
                       y: [newPointsData.y],
@@ -554,149 +873,362 @@
                     },
                     [newPointsTraceIndex]
                   ).then(function () {
-                    showStatus("Deleted selected custom point.");
-                    updateNewPointsFile("delete", {
+                    showStatus(
+                      "Added custom point at (" +
+                        xCoord.toFixed(2) +
+                        ", " +
+                        yCoord.toFixed(2) +
+                        ", " +
+                        zCoord.toFixed(2) +
+                        ")."
+                    );
+                    updateNewPointsFile("append", {
                       cls_label: classDropdown.value,
                       batch_num: batchDropdown.value,
-                      x: selectedX,
-                      y: selectedY,
-                      z: selectedZ,
+                      x: xCoord,
+                      y: yCoord,
+                      z: zCoord,
                     });
-                    clearSelection();
                   });
-                } else {
-                  var trace = viz.data[selectedTraceIndex];
-                  trace.x.splice(selectedPointIndex, 1);
-                  trace.y.splice(selectedPointIndex, 1);
-                  trace.z.splice(selectedPointIndex, 1);
-                  Plotly.restyle(viz,
-                    { x: [trace.x], y: [trace.y], z: [trace.z] },
-                    [selectedTraceIndex]
-                  ).then(function () {
-                    showStatus("Deleted selected custom point from loaded trace.");
-                    updateNewPointsFile("delete", {
+                };
+
+                // Click → handle arrow drawing, point selection, and arrow selection
+                viz.on("plotly_click", function (eventData) {
+                  var pt = eventData.points[0];
+                  var curve = pt.curveNumber,
+                    idx = pt.pointNumber;
+
+                  // Arrow selection
+                  if (arrowTraceIndex !== null && curve === arrowTraceIndex) {
+                    var arrX = viz.data[arrowTraceIndex].x,
+                      arrY = viz.data[arrowTraceIndex].y,
+                      arrZ = viz.data[arrowTraceIndex].z;
+                    var seg = Math.floor(idx / 3),
+                      base = seg * 3;
+                    selectedArrowP1 = {
+                      x: arrX[base],
+                      y: arrY[base],
+                      z: arrZ[base],
+                    };
+                    selectedArrowP2 = {
+                      x: arrX[base + 1],
+                      y: arrY[base + 1],
+                      z: arrZ[base + 1],
+                    };
+                    selectedArrowSegmentIndex = seg;
+                    showStatus(
+                      "Arrow selected from (" +
+                        selectedArrowP1.x.toFixed(2) +
+                        ", " +
+                        selectedArrowP1.y.toFixed(2) +
+                        ", " +
+                        selectedArrowP1.z.toFixed(2) +
+                        ") to (" +
+                        selectedArrowP2.x.toFixed(2) +
+                        ", " +
+                        selectedArrowP2.y.toFixed(2) +
+                        ", " +
+                        selectedArrowP2.z.toFixed(2) +
+                        ")."
+                    );
+                    return;
+                  }
+
+                  // Existing arrow-drawing logic...
+                  var currentPt = { x: pt.x, y: pt.y, z: pt.z };
+
+                  // If in arrow-drawing mode, complete arrow
+                  if (arrowPoints.length === 1) {
+                    arrowPoints.push(currentPt);
+                    var p1 = arrowPoints[0],
+                      p2 = arrowPoints[1];
+                    drawArrow(viz, p1, p2);
+                    updateNewPointsFile("add_arrow", {
                       cls_label: classDropdown.value,
                       batch_num: batchDropdown.value,
-                      x: selectedX,
-                      y: selectedY,
-                      z: selectedZ,
+                      p1: p1,
+                      p2: p2,
                     });
-                    clearSelection();
-                  });
-                }
-              });
-    
-              // Assign custom-point to part
-              document.getElementById("assign-button").addEventListener("click", function () {
-                if (selectedTraceIndex === null) {
-                  showStatus("No custom point selected for assignment.");
-                  return;
-                }
-                var newPart = selectedPartLabel;
-                if (!loadedPartTraceIndex.hasOwnProperty(newPart)) {
-                  showStatus("Selected part not found.");
-                  return;
-                }
-                var targetTraceIndex = loadedPartTraceIndex[newPart];
-                var targetTrace = viz.data[targetTraceIndex];
-                var newLoadedX = targetTrace.x.slice();
-                var newLoadedY = targetTrace.y.slice();
-                var newLoadedZ = targetTrace.z.slice();
-                newLoadedX.push(selectedX);
-                newLoadedY.push(selectedY);
-                newLoadedZ.push(selectedZ);
-                Plotly.restyle(viz,
-                  { x: [newLoadedX], y: [newLoadedY], z: [newLoadedZ] },
-                  [targetTraceIndex]
-                ).then(function () {
-                  if (selectedTraceIndex === newPointsTraceIndex) {
-                    newPointsData.x.splice(selectedPointIndex, 1);
-                    newPointsData.y.splice(selectedPointIndex, 1);
-                    newPointsData.z.splice(selectedPointIndex, 1);
-                    newPointsData.text.splice(selectedPointIndex, 1);
-                    Plotly.restyle(viz,
-                      {
-                        x: [newPointsData.x],
-                        y: [newPointsData.y],
-                        z: [newPointsData.z],
-                        text: [newPointsData.text],
-                      },
-                      [newPointsTraceIndex]
-                    ).then(function () {
-                      showStatus("Custom point assigned to Part " + newPart + ".");
-                      updateNewPointsFile("reassign", {
-                        cls_label: classDropdown.value,
-                        batch_num: batchDropdown.value,
-                        x: selectedX,
-                        y: selectedY,
-                        z: selectedZ,
-                        new_part_label: newPart,
-                      });
-                      clearSelection();
-                    });
+                    showStatus(
+                      "Arrow added from (" +
+                        p1.x.toFixed(2) +
+                        ", " +
+                        p1.y.toFixed(2) +
+                        ", " +
+                        p1.z.toFixed(2) +
+                        ") to (" +
+                        p2.x.toFixed(2) +
+                        ", " +
+                        p2.y.toFixed(2) +
+                        ", " +
+                        p2.z.toFixed(2) +
+                        ")"
+                    );
+                    arrowPoints = [];
+                    isDrawingArrow = false;
+                    return;
+                  }
+
+                  // Otherwise, start arrow-drawing or point-selection
+                  var isNew = pt.curveNumber === newPointsTraceIndex;
+                  var isLoadedCustom =
+                    curve < newPointsTraceIndex &&
+                    idx >= loadedOrigCount[curve];
+                  var isCustomPoint = isNew || isLoadedCustom;
+
+                  if (isCustomPoint) {
+                    // select custom point for delete/reassign
+                    selectedTraceIndex = curve;
+                    selectedPointIndex = idx;
+                    selectedX = pt.x;
+                    selectedY = pt.y;
+                    selectedZ = pt.z;
+                    showStatus(
+                      "Custom point selected. You can delete, reassign, or draw arrows."
+                    );
+
+                    if (isLoadedCustom) {
+                      for (var part in loadedPartTraceIndex) {
+                        if (loadedPartTraceIndex[part] === curve) {
+                          partDropdown.value = part;
+                          selectedPartLabel = part;
+                          break;
+                        }
+                      }
+                    }
+
+                    // initiate arrow drawing
+                    if (arrowPoints.length === 0) {
+                      arrowPoints.push(currentPt);
+                      isDrawingArrow = true;
+                    }
                   } else {
-                    var sourceTrace = viz.data[selectedTraceIndex];
-                    sourceTrace.x.splice(selectedPointIndex, 1);
-                    sourceTrace.y.splice(selectedPointIndex, 1);
-                    sourceTrace.z.splice(selectedPointIndex, 1);
-                    Plotly.restyle(viz,
-                      { x: [sourceTrace.x], y: [sourceTrace.y], z: [sourceTrace.z] },
-                      [selectedTraceIndex]
-                    ).then(function () {
-                      showStatus("Custom point from loaded trace reassigned to Part " + newPart + ".");
-                      updateNewPointsFile("reassign", {
-                        cls_label: classDropdown.value,
-                        batch_num: batchDropdown.value,
-                        x: selectedX,
-                        y: selectedY,
-                        z: selectedZ,
-                        new_part_label: newPart,
-                      });
-                      clearSelection();
-                    });
+                    // loaded point -> arrow start
+                    if (arrowPoints.length === 0) {
+                      arrowPoints.push(currentPt);
+                      isDrawingArrow = true;
+                      showStatus(
+                        "First point selected for arrow. Click another point to complete the arrow."
+                      );
+                    } else {
+                      showStatus(
+                        "Original loaded point; only usable for drawing arrows."
+                      );
+                    }
                   }
                 });
-              });
-    
-              // Delete selected arrow
-              document.getElementById("delete-arrow-button").addEventListener("click", function () {
-                if (selectedArrowSegmentIndex === null) {
-                  showStatus("No arrow selected for deletion.");
-                  return;
-                }
-                var trace = viz.data[arrowTraceIndex];
-                var xArr = trace.x.slice(),
-                    yArr = trace.y.slice(),
-                    zArr = trace.z.slice();
-                var start = selectedArrowSegmentIndex * 3;
-                xArr.splice(start, 3);
-                yArr.splice(start, 3);
-                zArr.splice(start, 3);
-    
-                Plotly.restyle(viz,
-                  { x: [xArr], y: [yArr], z: [zArr] },
-                  [arrowTraceIndex]
-                ).then(function () {
-                  updateNewPointsFile("delete_arrow", {
-                    cls_label: classDropdown.value,
-                    batch_num: batchDropdown.value,
-                    p1: selectedArrowP1,
-                    p2: selectedArrowP2
+
+                // Delete custom-point button
+                document
+                  .getElementById("delete-button")
+                  .addEventListener("click", function () {
+                    if (selectedTraceIndex === null) {
+                      showStatus("No custom point selected for deletion.");
+                      return;
+                    }
+                    if (selectedTraceIndex === newPointsTraceIndex) {
+                      newPointsData.x.splice(selectedPointIndex, 1);
+                      newPointsData.y.splice(selectedPointIndex, 1);
+                      newPointsData.z.splice(selectedPointIndex, 1);
+                      newPointsData.text.splice(selectedPointIndex, 1);
+                      Plotly.restyle(
+                        viz,
+                        {
+                          x: [newPointsData.x],
+                          y: [newPointsData.y],
+                          z: [newPointsData.z],
+                          text: [newPointsData.text],
+                        },
+                        [newPointsTraceIndex]
+                      ).then(function () {
+                        showStatus("Deleted selected custom point.");
+                        updateNewPointsFile("delete", {
+                          cls_label: classDropdown.value,
+                          batch_num: batchDropdown.value,
+                          x: selectedX,
+                          y: selectedY,
+                          z: selectedZ,
+                        });
+                        clearSelection();
+                      });
+                    } else {
+                      var trace = viz.data[selectedTraceIndex];
+                      trace.x.splice(selectedPointIndex, 1);
+                      trace.y.splice(selectedPointIndex, 1);
+                      trace.z.splice(selectedPointIndex, 1);
+                      Plotly.restyle(
+                        viz,
+                        { x: [trace.x], y: [trace.y], z: [trace.z] },
+                        [selectedTraceIndex]
+                      ).then(function () {
+                        showStatus(
+                          "Deleted selected custom point from loaded trace."
+                        );
+                        updateNewPointsFile("delete", {
+                          cls_label: classDropdown.value,
+                          batch_num: batchDropdown.value,
+                          x: selectedX,
+                          y: selectedY,
+                          z: selectedZ,
+                        });
+                        clearSelection();
+                      });
+                    }
                   });
-                  showStatus("Deleted selected arrow.");
-                  selectedArrowP1 = selectedArrowP2 = null;
-                  selectedArrowSegmentIndex = null;
-                });
+
+                // Assign custom-point to part
+                document
+                  .getElementById("assign-button")
+                  .addEventListener("click", function () {
+                    if (selectedTraceIndex === null) {
+                      showStatus("No custom point selected for assignment.");
+                      return;
+                    }
+                    var newPart = selectedPartLabel;
+                    if (!loadedPartTraceIndex.hasOwnProperty(newPart)) {
+                      showStatus("Selected part not found.");
+                      return;
+                    }
+                    var targetTraceIndex = loadedPartTraceIndex[newPart];
+                    var targetTrace = viz.data[targetTraceIndex];
+                    var newLoadedX = targetTrace.x.slice();
+                    var newLoadedY = targetTrace.y.slice();
+                    var newLoadedZ = targetTrace.z.slice();
+                    newLoadedX.push(selectedX);
+                    newLoadedY.push(selectedY);
+                    newLoadedZ.push(selectedZ);
+                    Plotly.restyle(
+                      viz,
+                      { x: [newLoadedX], y: [newLoadedY], z: [newLoadedZ] },
+                      [targetTraceIndex]
+                    ).then(function () {
+                      if (selectedTraceIndex === newPointsTraceIndex) {
+                        newPointsData.x.splice(selectedPointIndex, 1);
+                        newPointsData.y.splice(selectedPointIndex, 1);
+                        newPointsData.z.splice(selectedPointIndex, 1);
+                        newPointsData.text.splice(selectedPointIndex, 1);
+                        Plotly.restyle(
+                          viz,
+                          {
+                            x: [newPointsData.x],
+                            y: [newPointsData.y],
+                            z: [newPointsData.z],
+                            text: [newPointsData.text],
+                          },
+                          [newPointsTraceIndex]
+                        ).then(function () {
+                          showStatus(
+                            "Custom point assigned to Part " + newPart + "."
+                          );
+                          updateNewPointsFile("reassign", {
+                            cls_label: classDropdown.value,
+                            batch_num: batchDropdown.value,
+                            x: selectedX,
+                            y: selectedY,
+                            z: selectedZ,
+                            new_part_label: newPart,
+                          });
+                          clearSelection();
+                        });
+                      } else {
+                        var sourceTrace = viz.data[selectedTraceIndex];
+                        sourceTrace.x.splice(selectedPointIndex, 1);
+                        sourceTrace.y.splice(selectedPointIndex, 1);
+                        sourceTrace.z.splice(selectedPointIndex, 1);
+                        Plotly.restyle(
+                          viz,
+                          {
+                            x: [sourceTrace.x],
+                            y: [sourceTrace.y],
+                            z: [sourceTrace.z],
+                          },
+                          [selectedTraceIndex]
+                        ).then(function () {
+                          showStatus(
+                            "Custom point from loaded trace reassigned to Part " +
+                              newPart +
+                              "."
+                          );
+                          updateNewPointsFile("reassign", {
+                            cls_label: classDropdown.value,
+                            batch_num: batchDropdown.value,
+                            x: selectedX,
+                            y: selectedY,
+                            z: selectedZ,
+                            new_part_label: newPart,
+                          });
+                          clearSelection();
+                        });
+                      }
+                    });
+                  });
+
+                // Delete selected arrow
+                document
+                  .getElementById("delete-arrow-button")
+                  .addEventListener("click", function () {
+                    if (selectedArrowSegmentIndex === null) {
+                      showStatus("No arrow selected for deletion.");
+                      return;
+                    }
+                    var trace = viz.data[arrowTraceIndex];
+                    var xArr = trace.x.slice(),
+                      yArr = trace.y.slice(),
+                      zArr = trace.z.slice();
+                    var start = selectedArrowSegmentIndex * 3;
+                    xArr.splice(start, 3);
+                    yArr.splice(start, 3);
+                    zArr.splice(start, 3);
+
+                    Plotly.restyle(viz, { x: [xArr], y: [yArr], z: [zArr] }, [
+                      arrowTraceIndex,
+                    ]).then(function () {
+                      updateNewPointsFile("delete_arrow", {
+                        cls_label: classDropdown.value,
+                        batch_num: batchDropdown.value,
+                        p1: selectedArrowP1,
+                        p2: selectedArrowP2,
+                      });
+                      showStatus("Deleted selected arrow.");
+                      selectedArrowP1 = selectedArrowP2 = null;
+                      selectedArrowSegmentIndex = null;
+                    });
+                  });
               });
-    
+            })
+            .catch(function (error) {
+              console.error("Error loading point cloud data:", error);
+              document.getElementById("visualization").innerHTML =
+                "Error loading data";
             });
-          })
-          .catch(function (error) {
-            console.error("Error loading point cloud data:", error);
-            document.getElementById("visualization").innerHTML = "Error loading data";
-          });
+        }
       }
+      
+      // ----------------------------------------------------------------
+      // Mode Toggle Wiring
+      // ----------------------------------------------------------------
+      document.querySelectorAll('input[name="mode"]').forEach((radio) => {
+        radio.onchange = () => {
+          if (radio.value === "screw") initScrewMode();
+          else initSegmentMode();
+        };
+      });
+
+      // Initialize on page load
+      window.addEventListener("DOMContentLoaded", () => {
+        const m = document.querySelector('input[name="mode"]:checked').value;
+        if (m === "screw") initScrewMode();
+        else initSegmentMode();
+      });
+
+      // Help tooltip toggle
+      document
+        .querySelector(".help-icon")
+        .addEventListener("click", function () {
+          const tooltip = document.querySelector(".help-tooltip");
+          tooltip.style.display =
+            tooltip.style.display === "block" ? "none" : "block";
+        });
     </script>
-    
   </body>
 </html>
