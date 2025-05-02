@@ -157,20 +157,11 @@
             <li>Double-click on the plot to add a new point</li>
             <li>The depth slider sets the z-coordinate</li>
             <li>
-              New points are labeled "Custom Point", appear in red, and have
-              part_label -1
-            </li>
-            <li>
-              Click on a custom point to select it (only custom points – those
-              with a "custom" flag – are modifiable)
-            </li>
-            <li>
               Click "Delete Selected Point" to remove the selected custom point
             </li>
             <li>
               Use the "Assign to Part" dropdown and click "Assign Selected Point"
-              to reassign the custom point; its part_label is then updated (stored
-              as an integer) while the "custom" flag persists
+              to reassign the custom point
             </li>
             <li>
               Click two points (loaded or custom) in sequence to draw an arrow
@@ -183,12 +174,34 @@
           </li>
           <li>To change the arrow direction, click on another point</li>
           <li>The arrow represents the axis direction for the screw</li>
+          <li>Select RANSAC Mode from the toggle buttons</li>
+          <li>Once 3 points are selected, clickPlot RANSAC Circleto draw the best-fit circle</li>
+          <li>Starting a new RANSAC segment will clear all visible circles from the plot</li>
         </ul>
       </div>
     </div>
 
     <script>
       // Global mapping normalization
+
+      function clearPlotlyEventListeners() {
+        // Clear Plotly-specific listeners
+        if (typeof vizDiv.removeListener === "function") {
+          vizDiv.removeListener("plotly_click");
+          vizDiv.removeListener("plotly_hover");
+          vizDiv.removeListener("plotly_selected");
+        }
+
+        // Clear DOM-level listeners (only if they're set — Segment needs its own)
+        vizDiv.ondblclick = null;
+
+        // Optional: if you used a bound function for mousemove, unbind it
+        if (window._boundMouseMove) {
+          document.removeEventListener("mousemove", window._boundMouseMove);
+          window._boundMouseMove = null;
+        }
+      }
+
       const rawMapping = JSON.parse("{{ mapping_json|escapejs }}");
       const mapping = {};
       Object.entries(rawMapping).forEach(([k, v]) => {
@@ -260,10 +273,8 @@
         toggleRANSACUI(false);
         toggleScrewUI(true);
         Plotly.purge(vizDiv);
-        if (vizDiv.removeAllListeners) {
-          vizDiv.removeAllListeners("plotly_click");
-          vizDiv.removeAllListeners("plotly_hover");
-        }
+        clearPlotlyEventListeners();
+        
         if (currentPopup) {
           currentPopup.remove();
           currentPopup = null;
@@ -581,12 +592,12 @@
         toggleSegmentUI(true);
         toggleRANSACUI(false);
         toggleScrewUI(false);
+        // clearPlotlyEventListeners();
         var mapping = JSON.parse("{{ mapping_json|escapejs }}");
         var classDropdown = document.getElementById("class-dropdown");
         var batchDropdown = document.getElementById("batch-dropdown");
         var partDropdown = document.getElementById("part-dropdown");
         var selectedPartLabel = null;
-
         // Plotly viz element
         var viz = null;
 
@@ -1281,10 +1292,7 @@
         toggleScrewUI(false);
         toggleRANSACUI(true);
         Plotly.purge(vizDiv);
-        if (vizDiv.removeAllListeners) {
-          vizDiv.removeAllListeners("plotly_click");
-          vizDiv.removeAllListeners("plotly_hover");
-        }
+        clearPlotlyEventListeners();
         if (currentPopup) { currentPopup.remove(); currentPopup = null; }
 
         const startBtn     = document.getElementById("start-ransac-button");
@@ -1355,7 +1363,7 @@
           }
 
           vizDiv.on("plotly_click", ev => {
-            if (!selecting || picks.length >= 3) return;
+            if (!selecting) return;
             const pt = ev.points[0];
             const key = pt.curveNumber + "-" + pt.pointNumber;
             if (picks.some(p => p.curveNumber === pt.curveNumber &&
