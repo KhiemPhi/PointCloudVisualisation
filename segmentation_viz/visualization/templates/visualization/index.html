@@ -260,6 +260,10 @@
         toggleRANSACUI(false);
         toggleScrewUI(true);
         Plotly.purge(vizDiv);
+        if (vizDiv.removeAllListeners) {
+          vizDiv.removeAllListeners("plotly_click");
+          vizDiv.removeAllListeners("plotly_hover");
+        }
         if (currentPopup) {
           currentPopup.remove();
           currentPopup = null;
@@ -1269,7 +1273,6 @@
         }
       }
       
-
       // ----------------------------------------------------------------
       // RANSAC Mode Stub
       // ----------------------------------------------------------------
@@ -1278,6 +1281,10 @@
         toggleScrewUI(false);
         toggleRANSACUI(true);
         Plotly.purge(vizDiv);
+        if (vizDiv.removeAllListeners) {
+          vizDiv.removeAllListeners("plotly_click");
+          vizDiv.removeAllListeners("plotly_hover");
+        }
         if (currentPopup) { currentPopup.remove(); currentPopup = null; }
 
         const startBtn     = document.getElementById("start-ransac-button");
@@ -1578,7 +1585,6 @@
         batchD.onchange = loadPlot;
         updateBatches();
       }
-
 
       // ----------------------------------------------------------------
       // Mode Toggle Wiring
