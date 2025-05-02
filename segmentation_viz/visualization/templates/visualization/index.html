@@ -36,16 +36,20 @@
         <div class="mode-toggle">
           <label>
             <input type="radio" name="mode" value="segment" />
-            Segment Mode
+            Normal Mode
           </label>
           <label>
             <input type="radio" name="mode" value="screw" checked />
             Screw Mode
           </label>
+          <label>
+            <input type="radio" name="mode" value="ransac" />
+            RANSAC Mode
+          </label>
         </div>
       </div>
 
-      <!-- Segment-mode controls (hidden in Screw) -->
+      <!-- Segment-mode controls -->
       <div class="slider-container">
         <label for="depth-slider">Depth (z):</label>
         <input
@@ -71,14 +75,71 @@
         </div>
       </div>
 
-      <!-- Screw-mode controls (hidden in Segment) -->
+      <!-- Screw-mode controls -->
       <div id="screw-dropdown-container" style="margin-bottom: 12px;" class="dropdown-wrapper">
         <label for="screw-dropdown">Screw</label>
         <select id="screw-dropdown" class="dropdown"> 
           <!-- Options will be populated dynamically -->
         </select>
       </div>
-      
+
+      <!-- RANSAC-mode controls -->
+      <div
+      id="ransac-controls"
+      style="
+        display: none;
+        flex-direction: row;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        margin: 10px auto;
+      "
+    >
+      <button
+        id="start-ransac-button"
+        style="
+          padding: 8px 16px;
+          font-size: 16px;
+          border: none;
+          border-radius: 5px;
+          background-color: #007bff;
+          color: white;
+          cursor: pointer;
+          margin: 5px;
+          outline: none;
+        "
+      >
+        Start RANSAC Segment
+      </button>
+      <button
+        id="plot-ransac-button"
+        style="
+          padding: 8px 16px;
+          font-size: 16px;
+          border: none;
+          border-radius: 5px;
+          background-color: #007bff;
+          color: white;
+          margin: 5px;
+          outline: none;
+          opacity: 0.6;
+        "
+      >
+        Plot RANSAC Circle
+      </button>
+      <div style="margin-top: 8px; margin-left: 20px;">
+        <label for="circle-dropdown">Circle</label>
+        <select
+          id="circle-dropdown"
+          class="dropdown"
+          style="margin-left: 8px; padding: 4px 8px; font-size: 14px;"
+        >
+          <option value="">Select a circle</option>
+          <!-- dynamically populated: circle0, circle1, … -->
+        </select>
+      </div>
+    </div>
+    
 
       <!-- Plotly visualization and overlays -->
       <div id="visualization" style="width: 100%; height: 600px"></div>
@@ -153,6 +214,11 @@
           .style.display = show ? '' : 'none';
       }
 
+      function toggleRANSACUI(show) {
+        const container = document.getElementById("ransac-controls");
+        container.style.display = show ? "flex" : "none";
+      }
+
       const vizDiv = document.getElementById("visualization");
       let viz = null,
         currentPopup = null;
@@ -190,8 +256,8 @@
       // Screw Mode Implementation (fully self‐contained helpers)
       // ----------------------------------------------------------------
       function initScrewMode() {
-        console.log("✅ Screw mode enabled");
         toggleSegmentUI(false);
+        toggleRANSACUI(false);
         toggleScrewUI(true);
         Plotly.purge(vizDiv);
         if (currentPopup) {
@@ -508,10 +574,9 @@
       // Segment Mode Stub
       // ----------------------------------------------------------------
       function initSegmentMode() {
-        console.log("✅ Segment mode enabled");
         toggleSegmentUI(true);
+        toggleRANSACUI(false);
         toggleScrewUI(false);
-        // ... paste your full Segment-mode code here ...
         var mapping = JSON.parse("{{ mapping_json|escapejs }}");
         var classDropdown = document.getElementById("class-dropdown");
         var batchDropdown = document.getElementById("batch-dropdown");
@@ -1204,13 +1269,325 @@
         }
       }
       
+
+      // ----------------------------------------------------------------
+      // RANSAC Mode Stub
+      // ----------------------------------------------------------------
+      function initRANSACMode() {
+        toggleSegmentUI(false);
+        toggleScrewUI(false);
+        toggleRANSACUI(true);
+        Plotly.purge(vizDiv);
+        if (currentPopup) { currentPopup.remove(); currentPopup = null; }
+
+        const startBtn     = document.getElementById("start-ransac-button");
+        const plotBtn      = document.getElementById("plot-ransac-button");
+        const clsD         = document.getElementById("class-dropdown");
+        const batchD       = document.getElementById("batch-dropdown");
+        const circleSelect = document.getElementById("circle-dropdown");
+
+        let selecting   = false;
+        let picks       = [];  
+        let circleCount = 0;
+
+        function fitCircle2D(points) {
+          let sumx=0,sumy=0,sumxx=0,sumyy=0,sumxy=0,
+              sumx3=0,sumy3=0,sumx2y=0,sumxy2=0,
+              n = points.length;
+          points.forEach(p=>{
+            const x=p.x, y=p.y, xx=x*x, yy=y*y;
+            sumx+=x; sumy+=y;
+            sumxx+=xx; sumyy+=yy; sumxy+=x*y;
+            sumx3+=xx*x; sumy3+=yy*y;
+            sumx2y+=xx*y; sumxy2+=x*yy;
+          });
+          const C = n*sumxx - sumx*sumx;
+          const D = n*sumxy - sumx*sumy;
+          const E = n*sumyy - sumy*sumy;
+          const G = 0.5*(n*sumx3 + n*sumxy2 - sumxx*sumx - sumyy*sumx);
+          const H = 0.5*(n*sumy3 + n*sumx2y - sumxx*sumy - sumyy*sumy);
+          const denom = C*E - D*D;
+          const cx = (G*E - D*H)/denom;
+          const cy = (C*H - D*G)/denom;
+          const r  = Math.sqrt(
+            (cx*cx + cy*cy) +
+            (sumxx + sumyy - 2*(cx*sumx + cy*sumy))/n
+          );
+          return { cx, cy, r };
+        }
+
+        // draw one of our circles (and add to the dropdown)
+        function drawCircle({cx,cy,r}, cz, idx) {
+          const θs = Array.from({length:60},(_,i)=>2*Math.PI*i/60);
+          const xs = θs.map(t=>cx + r*Math.cos(t));
+          const ys = θs.map(t=>cy + r*Math.sin(t));
+          const zs = θs.map(_=>cz);
+          Plotly.addTraces(vizDiv, {
+            x: xs, y: ys, z: zs,
+            mode: "lines", type: "scatter3d",
+            line: { width:4, color: idx%2? "black":"red" },
+            name: `circle${idx}`
+          });
+        }
+
+        // wire up the buttons
+        startBtn.onclick = () => {
+          selecting   = true;
+          picks       = [];
+          plotBtn.disabled = false;
+          plotBtn.style.opacity = 1;
+          statusMsg.textContent = "Click ≥3 points to define a segment…";
+          Plotly.deleteTraces(vizDiv,
+              vizDiv.data
+                .map((t, i) => t.name?.startsWith("circle") ? i : -1)
+                .filter(i => i !== -1)
+            );
+
+            if (vizDiv.removeAllListeners) {
+            vizDiv.removeAllListeners("plotly_click");
+          }
+
+          vizDiv.on("plotly_click", ev => {
+            if (!selecting || picks.length >= 3) return;
+            const pt = ev.points[0];
+            const key = pt.curveNumber + "-" + pt.pointNumber;
+            if (picks.some(p => p.curveNumber === pt.curveNumber &&
+                                p.pointNumber === pt.pointNumber)) {
+              return;
+            }
+            picks.push({
+              x: pt.x, y: pt.y, z: pt.z,
+              curveNumber: pt.curveNumber,
+              pointNumber: pt.pointNumber
+            });
+            Plotly.addTraces(vizDiv, {
+              x: [pt.x], y: [pt.y], z: [pt.z],
+              mode: "markers", type: "scatter3d",
+              marker: { size: 10, color: "orange" },
+              showlegend: false, hoverinfo: "none"
+            });
+            statusMsg.textContent = `Picked ${picks.length}/3 points`;
+            if (picks.length === 3) {
+              statusMsg.textContent = "3 points picked — ready to plot circle.";
+              selecting = false;
+            }
+          });
+        };
+
+        plotBtn.onclick = () => {
+          if (picks.length < 3) {
+            return alert("Select at least 3 points first");
+          }
+          selecting = false;
+          
+          // fit & POST the circle parameters
+          const { cx, cy, r } = fitCircle2D(picks);
+          const cz = picks.reduce((sum,p)=>sum + p.z, 0) / picks.length;
+          drawCircle({cx,cy,r}, cz, circleCount);
+
+          fetch("/update_points/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "add_segment_with_circle",
+              data: {
+                cls_label: clsD.value,
+                batch_num: batchD.value,
+                points: picks,
+                cx, cy, cz, r
+              }
+            })
+          }).catch(console.error);
+
+          statusMsg.textContent = `circle${circleCount} plotted (r=${r.toFixed(2)})`;
+          circleCount++;
+          plotBtn.disabled = true;
+        };
+
+        // load & plot current point cloud + stored circles
+        function loadPlot() {
+          fetch(`/api/points/${clsD.value}/${batchD.value}/?_=${Date.now()}`)
+            .then(r=>r.json())
+            .then(json=>{
+              const entry   = json[0];
+              const pts     = entry.coordinates;
+              const labels  = entry.part_label;
+              const circles = entry.circles || [];
+
+              // group by part label
+              const groups = {};
+              labels.forEach((lbl,i)=>{
+                if (!groups[lbl]) groups[lbl] = { x:[], y:[], z:[] };
+                const [x,y,z] = pts[i];
+                groups[lbl].x.push(x);
+                groups[lbl].y.push(y);
+                groups[lbl].z.push(z);
+              });
+
+              const traces = Object.keys(groups).sort((a,b)=>a-b).map(lbl=>({
+                x: groups[lbl].x,
+                y: groups[lbl].y,
+                z: groups[lbl].z,
+                mode: "markers", type: "scatter3d",
+                name: "Part " + lbl,
+                marker: { size:5, opacity:0.8, color: getColorForPart(lbl) },
+                hoverinfo: "x+y+z"
+              }));
+
+              Plotly.newPlot(vizDiv, traces, {
+                scene:{
+                  xaxis:{range:[-10,10]},
+                  yaxis:{range:[-10,10]},
+                  zaxis:{range:[-10,10]}
+                },
+                margin:{l:0,r:0,t:0,b:0},
+                hovermode:"closest",
+                legend:{
+                  x:0, y:1,
+                  xanchor:"left", yanchor:"top",
+                  bgcolor:"rgba(255,255,255,0.7)"
+                }
+              }, { responsive:true })
+              .then(()=>{
+                // re-draw stored circles
+                circleCount = 0;
+                circleSelect.innerHTML = "";  
+
+                const defaultOption = document.createElement("option");
+                defaultOption.disabled = true;
+                defaultOption.selected = true;
+                defaultOption.textContent = "Select circle";
+                circleSelect.appendChild(defaultOption);
+
+                circles.forEach((_, i) => {
+                  const opt = document.createElement("option");
+                  opt.value = i;
+                  opt.textContent = `circle${i}`;
+                  circleSelect.appendChild(opt);
+                });
+
+                // bind exactly one click handler for picking
+                if (vizDiv.removeAllListeners) {
+                  vizDiv.removeAllListeners("plotly_click");
+                }
+                vizDiv.on("plotly_click", ev=>{
+                  if (!selecting || picks.length >= 3) return;
+                  const pt = ev.points[0];
+                  const key = pt.curveNumber + "-" + pt.pointNumber;
+                  // skip duplicates
+                  if (picks.some(p => p.curveNumber===pt.curveNumber &&
+                                      p.pointNumber===pt.pointNumber)) {
+                    return;
+                  }
+                  picks.push({
+                    x: pt.x, y: pt.y, z: pt.z,
+                    curveNumber: pt.curveNumber,
+                    pointNumber: pt.pointNumber
+                  });
+                  Plotly.addTraces(vizDiv, {
+                    x:[pt.x], y:[pt.y], z:[pt.z],
+                    mode:"markers", type:"scatter3d",
+                    marker:{ size:10, color:"orange" },
+                    showlegend:false, hoverinfo:"none"
+                  });
+                  statusMsg.textContent = `Picked ${picks.length}/3 points`;
+                  if (picks.length === 3) {
+                    statusMsg.textContent = "3 points picked — ready to plot circle.";
+                    plotBtn.disabled = false;
+                    selecting = false;
+                  }
+                });
+              });
+            })
+            .catch(console.error);
+          
+        }
+
+        circleSelect.onchange = () => {
+  const selectedIdx = parseInt(circleSelect.value);
+  if (isNaN(selectedIdx)) return;
+
+  // Fetch the same JSON again to get circle data
+  fetch(`/api/points/${clsD.value}/${batchD.value}/?_=${Date.now()}`)
+    .then(r => r.json())
+    .then(json => {
+      const entry = json[0];
+      const c = entry.circles[selectedIdx];
+      if (!c) return;
+      const [cx, cy, cz, r] = c;
+
+      // Remove all existing traces before drawing selected circle
+      Plotly.purge(vizDiv);
+
+      // Optional: replot points only (excluding circles)
+      const pts = entry.coordinates;
+      const labels = entry.part_label;
+      const groups = {};
+      labels.forEach((lbl, i) => {
+        if (!groups[lbl]) groups[lbl] = { x: [], y: [], z: [] };
+        const [x, y, z] = pts[i];
+        groups[lbl].x.push(x);
+        groups[lbl].y.push(y);
+        groups[lbl].z.push(z);
+      });
+
+      const traces = Object.keys(groups).sort((a, b) => a - b).map(lbl => ({
+        x: groups[lbl].x,
+        y: groups[lbl].y,
+        z: groups[lbl].z,
+        mode: "markers", type: "scatter3d",
+        name: "Part " + lbl,
+        marker: { size: 5, opacity: 0.8, color: getColorForPart(lbl) },
+        hoverinfo: "x+y+z"
+      }));
+
+      Plotly.newPlot(vizDiv, traces, {
+        scene: {
+          xaxis: { range: [-10, 10] },
+          yaxis: { range: [-10, 10] },
+          zaxis: { range: [-10, 10] }
+        },
+        margin: { l: 0, r: 0, t: 0, b: 0 },
+        hovermode: "closest",
+        legend: {
+          x: 0, y: 1,
+          xanchor: "left", yanchor: "top",
+          bgcolor: "rgba(255,255,255,0.7)"
+        }
+      }, { responsive: true }).then(() => {
+        // Now draw only selected circle
+        drawCircle({ cx, cy, r }, cz, selectedIdx);
+      });
+    })
+    .catch(console.error);
+};
+
+        // batch dropdown wiring
+        function updateBatches() {
+          const batches = mapping[clsD.value] || [];
+          batchD.innerHTML = "";
+          batches.forEach(b=>{
+            const o = document.createElement("option");
+            o.value = o.text = b;
+            batchD.appendChild(o);
+          });
+          loadPlot();
+        }
+
+        clsD.onchange   = updateBatches;
+        batchD.onchange = loadPlot;
+        updateBatches();
+      }
+
+
       // ----------------------------------------------------------------
       // Mode Toggle Wiring
       // ----------------------------------------------------------------
       document.querySelectorAll('input[name="mode"]').forEach((radio) => {
         radio.onchange = () => {
           if (radio.value === "screw") initScrewMode();
-          else initSegmentMode();
+          else if (radio.value === "segment") initSegmentMode();
+          else initRANSACMode();
         };
       });
 

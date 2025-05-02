@@ -82,6 +82,35 @@ select.dropdown:focus {
 .slider-container button:hover {
   background-color: #0056b3;
 }
+.ransac-controls {
+  display: flex;          /* make it a flex container */
+  justify-content: center;
+  text-align: center;
+  margin: 10px auto;
+  /* don’t hide it here, let JS toggle a “hidden” class instead */
+}
+
+.ransac-controls.hidden {
+  display: none !important;
+}
+
+.ransac-controls button {
+  padding: 8px 16px;
+  font-size: 16px;
+  border: none;
+  border-radius: 5px;
+  background-color: #007bff;
+  color: white;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+  margin: 5px;
+  outline: none;
+}
+
+.ransac-controls button:hover {
+  background-color: #0056b3;
+}
+
 .part-selection {
   margin: 10px;
   text-align: center;

@@ -218,7 +218,48 @@ def update_points(request):
             ]
             if coords not in point_obj["screws"]:
                 point_obj["screws"].append(coords)
-            
+        
+        elif action == "add_segment":
+            pts = data.get("points", [])
+            coords = [[p["x"], p["y"], p["z"]] for p in pts if "x" in p and "y" in p and "z" in p]
+            if "segments" not in point_obj:
+                point_obj["segments"] = []
+            point_obj["segments"].append(coords)
+
+        elif action == "add_circle" :
+            cx = data.get("cx"); cy = data.get("cy")
+            cz = data.get("cz"); r = data.get("r")
+            if None in (cx, cy, cz, r):
+                return HttpResponseBadRequest("Missing circle parameters")
+            if "circles" not in point_obj:
+                point_obj["circles"] = []
+            coords = [cx, cy, cz, r]
+            if coords not in point_obj["circles"]:
+                point_obj["circles"].append(coords)
+        
+        elif action == "add_segment_with_circle":
+            pts = data.get("points", [])
+            cx = data.get("cx")
+            cy = data.get("cy")
+            cz = data.get("cz")
+            r  = data.get("r")
+
+            if None in (cx, cy, cz, r):
+                return HttpResponseBadRequest("Missing circle parameters")
+
+            # Add segment
+            coords = [[p["x"], p["y"], p["z"]] for p in pts if "x" in p and "y" in p and "z" in p]
+            if "segments" not in point_obj:
+                point_obj["segments"] = []
+            point_obj["segments"].append(coords)
+
+            # Add circle
+            if "circles" not in point_obj:
+                point_obj["circles"] = []
+            circle_data = [cx, cy, cz, r]
+            if circle_data not in point_obj["circles"]:
+                point_obj["circles"].append(circle_data)
+
         else:
             return HttpResponseBadRequest("Unknown action")
         
