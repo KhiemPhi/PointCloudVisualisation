@@ -1288,311 +1288,381 @@
       // RANSAC Mode Stub
       // ----------------------------------------------------------------
       function initRANSACMode() {
-        toggleSegmentUI(false);
-        toggleScrewUI(false);
-        toggleRANSACUI(true);
-        Plotly.purge(vizDiv);
-        clearPlotlyEventListeners();
-        if (currentPopup) { currentPopup.remove(); currentPopup = null; }
+  toggleSegmentUI(false);
+  toggleScrewUI(false);
+  toggleRANSACUI(true);
+  Plotly.purge(vizDiv);
+  clearPlotlyEventListeners();
+  if (currentPopup) {
+    currentPopup.remove();
+    currentPopup = null;
+  }
 
-        const startBtn     = document.getElementById("start-ransac-button");
-        const plotBtn      = document.getElementById("plot-ransac-button");
-        const clsD         = document.getElementById("class-dropdown");
-        const batchD       = document.getElementById("batch-dropdown");
-        const circleSelect = document.getElementById("circle-dropdown");
+  const startBtn = document.getElementById("start-ransac-button");
+  const plotBtn = document.getElementById("plot-ransac-button");
+  const clsD = document.getElementById("class-dropdown");
+  const batchD = document.getElementById("batch-dropdown");
+  const circleSelect = document.getElementById("circle-dropdown");
 
-        let selecting   = false;
-        let picks       = [];  
-        let circleCount = 0;
+  let selecting = false;
+  let picks = [];
+  let circleCount = 0;
 
-        function fitCircle2D(points) {
-          let sumx=0,sumy=0,sumxx=0,sumyy=0,sumxy=0,
-              sumx3=0,sumy3=0,sumx2y=0,sumxy2=0,
-              n = points.length;
-          points.forEach(p=>{
-            const x=p.x, y=p.y, xx=x*x, yy=y*y;
-            sumx+=x; sumy+=y;
-            sumxx+=xx; sumyy+=yy; sumxy+=x*y;
-            sumx3+=xx*x; sumy3+=yy*y;
-            sumx2y+=xx*y; sumxy2+=x*yy;
-          });
-          const C = n*sumxx - sumx*sumx;
-          const D = n*sumxy - sumx*sumy;
-          const E = n*sumyy - sumy*sumy;
-          const G = 0.5*(n*sumx3 + n*sumxy2 - sumxx*sumx - sumyy*sumx);
-          const H = 0.5*(n*sumy3 + n*sumx2y - sumxx*sumy - sumyy*sumy);
-          const denom = C*E - D*D;
-          const cx = (G*E - D*H)/denom;
-          const cy = (C*H - D*G)/denom;
-          const r  = Math.sqrt(
-            (cx*cx + cy*cy) +
-            (sumxx + sumyy - 2*(cx*sumx + cy*sumy))/n
-          );
-          return { cx, cy, r };
-        }
+  function crossProduct(a, b) {
+    return {
+      x: a.y * b.z - a.z * b.y,
+      y: a.z * b.x - a.x * b.z,
+      z: a.x * b.y - a.y * b.x,
+    };
+  }
 
-        // draw one of our circles (and add to the dropdown)
-        function drawCircle({cx,cy,r}, cz, idx) {
-          const θs = Array.from({length:60},(_,i)=>2*Math.PI*i/60);
-          const xs = θs.map(t=>cx + r*Math.cos(t));
-          const ys = θs.map(t=>cy + r*Math.sin(t));
-          const zs = θs.map(_=>cz);
-          Plotly.addTraces(vizDiv, {
-            x: xs, y: ys, z: zs,
-            mode: "lines", type: "scatter3d",
-            line: { width:4, color: idx%2? "black":"red" },
-            name: `circle${idx}`
-          });
-        }
+  function getPerpendicularUnitVector(n) {
+    const ref = Math.abs(n.x) < 0.9 ? { x: 1, y: 0, z: 0 } : { x: 0, y: 1, z: 0 };
+    const perp = crossProduct(n, ref);
+    const len = Math.sqrt(perp.x ** 2 + perp.y ** 2 + perp.z ** 2);
+    return { x: perp.x / len, y: perp.y / len, z: perp.z / len };
+  }
 
-        // wire up the buttons
-        startBtn.onclick = () => {
-          selecting   = true;
-          picks       = [];
-          plotBtn.disabled = false;
-          plotBtn.style.opacity = 1;
-          statusMsg.textContent = "Click ≥3 points to define a segment…";
-          Plotly.deleteTraces(vizDiv,
-              vizDiv.data
-                .map((t, i) => t.name?.startsWith("circle") ? i : -1)
-                .filter(i => i !== -1)
-            );
+  function fitCircle2D(points) {
+    let sumx = 0,
+      sumy = 0,
+      sumxx = 0,
+      sumyy = 0,
+      sumxy = 0;
+    let sumx3 = 0,
+      sumy3 = 0,
+      sumx2y = 0,
+      sumxy2 = 0;
+    const n = points.length;
+    points.forEach((p) => {
+      const x = p.x,
+        y = p.y,
+        xx = x * x,
+        yy = y * y;
+      sumx += x;
+      sumy += y;
+      sumxx += xx;
+      sumyy += yy;
+      sumxy += x * y;
+      sumx3 += xx * x;
+      sumy3 += yy * y;
+      sumx2y += xx * y;
+      sumxy2 += x * yy;
+    });
+    const C = n * sumxx - sumx * sumx;
+    const D = n * sumxy - sumx * sumy;
+    const E = n * sumyy - sumy * sumy;
+    const G = 0.5 * (n * sumx3 + n * sumxy2 - sumxx * sumx - sumyy * sumx);
+    const H = 0.5 * (n * sumy3 + n * sumx2y - sumxx * sumy - sumyy * sumy);
+    const denom = C * E - D * D;
+    const cx = (G * E - D * H) / denom;
+    const cy = (C * H - D * G) / denom;
+    const r = Math.sqrt(
+      cx * cx +
+        cy * cy +
+        (sumxx + sumyy - 2 * (cx * sumx + cy * sumy)) / n
+    );
+    return { cx, cy, r };
+  }
 
-            if (vizDiv.removeAllListeners) {
-            vizDiv.removeAllListeners("plotly_click");
-          }
+  function fitCircle3D(points) {
+    const [p1, p2, p3] = points;
+    const v1 = { x: p2.x - p1.x, y: p2.y - p1.y, z: p2.z - p1.z };
+    const v2 = { x: p3.x - p1.x, y: p3.y - p1.y, z: p3.z - p1.z };
+    const nx = v1.y * v2.z - v1.z * v2.y;
+    const ny = v1.z * v2.x - v1.x * v2.z;
+    const nz = v1.x * v2.y - v1.y * v2.x;
+    const norm = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    const normal = { x: nx / norm, y: ny / norm, z: nz / norm };
 
-          vizDiv.on("plotly_click", ev => {
-            if (!selecting) return;
-            const pt = ev.points[0];
-            const key = pt.curveNumber + "-" + pt.pointNumber;
-            if (picks.some(p => p.curveNumber === pt.curveNumber &&
-                                p.pointNumber === pt.pointNumber)) {
-              return;
-            }
-            picks.push({
-              x: pt.x, y: pt.y, z: pt.z,
-              curveNumber: pt.curveNumber,
-              pointNumber: pt.pointNumber
-            });
-            Plotly.addTraces(vizDiv, {
-              x: [pt.x], y: [pt.y], z: [pt.z],
-              mode: "markers", type: "scatter3d",
-              marker: { size: 10, color: "orange" },
-              showlegend: false, hoverinfo: "none"
-            });
-            statusMsg.textContent = `Picked ${picks.length}/3 points`;
-            if (picks.length === 3) {
-              statusMsg.textContent = "3 points picked — ready to plot circle.";
-              selecting = false;
-            }
-          });
-        };
+    const u = { ...v1 };
+    const uLen = Math.sqrt(u.x * u.x + u.y * u.y + u.z * u.z);
+    u.x /= uLen;
+    u.y /= uLen;
+    u.z /= uLen;
 
-        plotBtn.onclick = () => {
-          if (picks.length < 3) {
-            return alert("Select at least 3 points first");
-          }
-          selecting = false;
-          
-          // fit & POST the circle parameters
-          const { cx, cy, r } = fitCircle2D(picks);
-          const cz = picks.reduce((sum,p)=>sum + p.z, 0) / picks.length;
-          drawCircle({cx,cy,r}, cz, circleCount);
+    const v = crossProduct(normal, u);
 
-          fetch("/update_points/", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "add_segment_with_circle",
-              data: {
-                cls_label: clsD.value,
-                batch_num: batchD.value,
-                points: picks,
-                cx, cy, cz, r
-              }
-            })
-          }).catch(console.error);
+    const proj2D = points.map((p) => {
+      const dx = p.x - p1.x,
+        dy = p.y - p1.y,
+        dz = p.z - p1.z;
+      return {
+        x: dx * u.x + dy * u.y + dz * u.z,
+        y: dx * v.x + dy * v.y + dz * v.z,
+      };
+    });
 
-          statusMsg.textContent = `circle${circleCount} plotted (r=${r.toFixed(2)})`;
-          circleCount++;
-          plotBtn.disabled = true;
-        };
+    const { cx, cy, r } = fitCircle2D(proj2D);
 
-        // load & plot current point cloud + stored circles
-        function loadPlot() {
-          fetch(`/api/points/${clsD.value}/${batchD.value}/?_=${Date.now()}`)
-            .then(r=>r.json())
-            .then(json=>{
-              const entry   = json[0];
-              const pts     = entry.coordinates;
-              const labels  = entry.part_label;
-              const circles = entry.circles || [];
+    const θs = Array.from({ length: 60 }, (_, i) => (2 * Math.PI * i) / 60);
+    const points3D = θs.map((t) => {
+      const x = cx + r * Math.cos(t);
+      const y = cy + r * Math.sin(t);
+      return {
+        x: p1.x + x * u.x + y * v.x,
+        y: p1.y + x * u.y + y * v.y,
+        z: p1.z + x * u.z + y * v.z,
+      };
+    });
 
-              // group by part label
-              const groups = {};
-              labels.forEach((lbl,i)=>{
-                if (!groups[lbl]) groups[lbl] = { x:[], y:[], z:[] };
-                const [x,y,z] = pts[i];
-                groups[lbl].x.push(x);
-                groups[lbl].y.push(y);
-                groups[lbl].z.push(z);
-              });
+    const center = {
+      x: p1.x + cx * u.x + cy * v.x,
+      y: p1.y + cx * u.y + cy * v.y,
+      z: p1.z + cx * u.z + cy * v.z,
+    };
 
-              const traces = Object.keys(groups).sort((a,b)=>a-b).map(lbl=>({
-                x: groups[lbl].x,
-                y: groups[lbl].y,
-                z: groups[lbl].z,
-                mode: "markers", type: "scatter3d",
-                name: "Part " + lbl,
-                marker: { size:5, opacity:0.8, color: getColorForPart(lbl) },
-                hoverinfo: "x+y+z"
-              }));
+    return { points3D, r, center, normal };
+  }
 
-              Plotly.newPlot(vizDiv, traces, {
-                scene:{
-                  xaxis:{range:[-10,10]},
-                  yaxis:{range:[-10,10]},
-                  zaxis:{range:[-10,10]}
-                },
-                margin:{l:0,r:0,t:0,b:0},
-                hovermode:"closest",
-                legend:{
-                  x:0, y:1,
-                  xanchor:"left", yanchor:"top",
-                  bgcolor:"rgba(255,255,255,0.7)"
-                }
-              }, { responsive:true })
-              .then(()=>{
-                // re-draw stored circles
-                circleCount = 0;
-                circleSelect.innerHTML = "";  
+  function drawCircle3D(points3D, r, idx, showInLegend = true) {
+    const xs = points3D.map((p) => p.x);
+    const ys = points3D.map((p) => p.y);
+    const zs = points3D.map((p) => p.z);
+    Plotly.addTraces(vizDiv, {
+      x: xs,
+      y: ys,
+      z: zs,
+      mode: "lines",
+      type: "scatter3d",
+      line: { width: 4, color: idx % 2 ? "black" : "red" },
+      name: `circle${idx}`,
+      showlegend: showInLegend,
+    });
+  }
 
-                const defaultOption = document.createElement("option");
-                defaultOption.disabled = true;
-                defaultOption.selected = true;
-                defaultOption.textContent = "Select circle";
-                circleSelect.appendChild(defaultOption);
+  startBtn.onclick = () => {
+    selecting = true;
+    picks = [];
+    plotBtn.disabled = false;
+    plotBtn.style.opacity = 1;
+    statusMsg.textContent = "Click ≥3 points to define a segment…";
 
-                circles.forEach((_, i) => {
-                  const opt = document.createElement("option");
-                  opt.value = i;
-                  opt.textContent = `circle${i}`;
-                  circleSelect.appendChild(opt);
-                });
+    Plotly.deleteTraces(
+      vizDiv,
+      vizDiv.data
+        .map((t, i) => (t.name?.startsWith("circle") ? i : -1))
+        .filter((i) => i !== -1)
+    );
 
-                // bind exactly one click handler for picking
-                if (vizDiv.removeAllListeners) {
-                  vizDiv.removeAllListeners("plotly_click");
-                }
-                vizDiv.on("plotly_click", ev=>{
-                  if (!selecting || picks.length >= 3) return;
-                  const pt = ev.points[0];
-                  const key = pt.curveNumber + "-" + pt.pointNumber;
-                  // skip duplicates
-                  if (picks.some(p => p.curveNumber===pt.curveNumber &&
-                                      p.pointNumber===pt.pointNumber)) {
-                    return;
-                  }
-                  picks.push({
-                    x: pt.x, y: pt.y, z: pt.z,
-                    curveNumber: pt.curveNumber,
-                    pointNumber: pt.pointNumber
-                  });
-                  Plotly.addTraces(vizDiv, {
-                    x:[pt.x], y:[pt.y], z:[pt.z],
-                    mode:"markers", type:"scatter3d",
-                    marker:{ size:10, color:"orange" },
-                    showlegend:false, hoverinfo:"none"
-                  });
-                  statusMsg.textContent = `Picked ${picks.length}/3 points`;
-                  if (picks.length === 3) {
-                    statusMsg.textContent = "3 points picked — ready to plot circle.";
-                    plotBtn.disabled = false;
-                    selecting = false;
-                  }
-                });
-              });
-            })
-            .catch(console.error);
-          
-        }
-
-        circleSelect.onchange = () => {
-  const selectedIdx = parseInt(circleSelect.value);
-  if (isNaN(selectedIdx)) return;
-
-  // Fetch the same JSON again to get circle data
-  fetch(`/api/points/${clsD.value}/${batchD.value}/?_=${Date.now()}`)
-    .then(r => r.json())
-    .then(json => {
-      const entry = json[0];
-      const c = entry.circles[selectedIdx];
-      if (!c) return;
-      const [cx, cy, cz, r] = c;
-
-      // Remove all existing traces before drawing selected circle
-      Plotly.purge(vizDiv);
-
-      // Optional: replot points only (excluding circles)
-      const pts = entry.coordinates;
-      const labels = entry.part_label;
-      const groups = {};
-      labels.forEach((lbl, i) => {
-        if (!groups[lbl]) groups[lbl] = { x: [], y: [], z: [] };
-        const [x, y, z] = pts[i];
-        groups[lbl].x.push(x);
-        groups[lbl].y.push(y);
-        groups[lbl].z.push(z);
+    vizDiv.on("plotly_click", (ev) => {
+      if (!selecting) return;
+      const pt = ev.points[0];
+      if (
+        picks.some(
+          (p) =>
+            p.curveNumber === pt.curveNumber && p.pointNumber === pt.pointNumber
+        )
+      )
+        return;
+      picks.push({
+        x: pt.x,
+        y: pt.y,
+        z: pt.z,
+        curveNumber: pt.curveNumber,
+        pointNumber: pt.pointNumber,
       });
+      Plotly.addTraces(vizDiv, {
+        x: [pt.x],
+        y: [pt.y],
+        z: [pt.z],
+        mode: "markers",
+        type: "scatter3d",
+        marker: { size: 10, color: "orange" },
+        showlegend: false,
+        hoverinfo: "none",
+      });
+      statusMsg.textContent = `Picked ${picks.length}/3 points`;
+      if (picks.length === 3) {
+        statusMsg.textContent = "3 points picked — ready to plot circle.";
+        selecting = false;
+      }
+    });
+  };
 
-      const traces = Object.keys(groups).sort((a, b) => a - b).map(lbl => ({
-        x: groups[lbl].x,
-        y: groups[lbl].y,
-        z: groups[lbl].z,
-        mode: "markers", type: "scatter3d",
-        name: "Part " + lbl,
-        marker: { size: 5, opacity: 0.8, color: getColorForPart(lbl) },
-        hoverinfo: "x+y+z"
+  plotBtn.onclick = () => {
+    if (picks.length < 3) return alert("Select at least 3 points first");
+    selecting = false;
+    const { points3D, r, center, normal } = fitCircle3D(picks);
+    drawCircle3D(points3D, r, circleCount);
+
+    const opt = document.createElement("option");
+    opt.value = circleCount;
+    opt.textContent = `circle${circleCount}`;
+    circleSelect.appendChild(opt);
+
+    fetch("/update_points/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "add_segment_with_circle",
+        data: {
+          cls_label: clsD.value,
+          batch_num: batchD.value,
+          points: picks,
+          cx: center.x,
+          cy: center.y,
+          cz: center.z,
+          nx: normal.x,
+          ny: normal.y,
+          nz: normal.z,
+          r,
+        },
+      }),
+    }).catch(console.error);
+
+    statusMsg.textContent = `circle${circleCount} plotted (r=${r.toFixed(2)})`;
+    circleCount++;
+    plotBtn.disabled = true;
+  };
+
+  circleSelect.onchange = () => {
+  const idx = parseInt(circleSelect.value);
+  if (isNaN(idx)) return;
+
+  fetch(`/api/points/${clsD.value}/${batchD.value}/?_=${Date.now()}`)
+    .then((r) => r.json())
+    .then((json) => {
+      const entry = json[0];
+      const c = entry.circles[idx];
+      if (!c) {
+        console.warn("No circle data found at index", idx);
+        return;
+      }
+
+      const [cx, cy, cz, nx, ny, nz, r] = c;
+      if ([cx, cy, cz, nx, ny, nz, r].some(v => typeof v !== 'number' || isNaN(v))) {
+        console.error("Invalid circle data:", c);
+        return;
+      }
+
+      const normal = { x: nx, y: ny, z: nz };
+      const u = getPerpendicularUnitVector(normal);
+      const v = crossProduct(normal, u);
+
+      const θs = Array.from({ length: 60 }, (_, j) => (2 * Math.PI * j) / 60);
+      const circlePoints = θs.map((t) => ({
+        x: cx + r * Math.cos(t) * u.x + r * Math.sin(t) * v.x,
+        y: cy + r * Math.cos(t) * u.y + r * Math.sin(t) * v.y,
+        z: cz + r * Math.cos(t) * u.z + r * Math.sin(t) * v.z,
       }));
 
-      Plotly.newPlot(vizDiv, traces, {
-        scene: {
-          xaxis: { range: [-10, 10] },
-          yaxis: { range: [-10, 10] },
-          zaxis: { range: [-10, 10] }
-        },
-        margin: { l: 0, r: 0, t: 0, b: 0 },
-        hovermode: "closest",
-        legend: {
-          x: 0, y: 1,
-          xanchor: "left", yanchor: "top",
-          bgcolor: "rgba(255,255,255,0.7)"
-        }
-      }, { responsive: true }).then(() => {
-        // Now draw only selected circle
-        drawCircle({ cx, cy, r }, cz, selectedIdx);
+      const xs = circlePoints.map(p => p.x);
+      const ys = circlePoints.map(p => p.y);
+      const zs = circlePoints.map(p => p.z);
+
+      // Ensure no undefined values
+      if (xs.some(isNaN) || ys.some(isNaN) || zs.some(isNaN)) {
+        console.error("Generated circle points contain NaN values");
+        return;
+      }
+
+      Plotly.deleteTraces(
+        vizDiv,
+        vizDiv.data
+          .map((t, i) => (t.name?.startsWith("selected-circle") ? i : -1))
+          .filter((i) => i !== -1)
+      );
+
+      Plotly.addTraces(vizDiv, {
+        x: xs,
+        y: ys,
+        z: zs,
+        mode: "lines",
+        type: "scatter3d",
+        line: { width: 4, color: "green" },
+        name: `selected-circle${idx}`,
+        showlegend: true,
       });
     })
     .catch(console.error);
 };
 
-        // batch dropdown wiring
-        function updateBatches() {
-          const batches = mapping[clsD.value] || [];
-          batchD.innerHTML = "";
-          batches.forEach(b=>{
-            const o = document.createElement("option");
-            o.value = o.text = b;
-            batchD.appendChild(o);
-          });
-          loadPlot();
-        }
+  function loadPlot() {
+    fetch(`/api/points/${clsD.value}/${batchD.value}/?_=${Date.now()}`)
+      .then((r) => r.json())
+      .then((json) => {
+        const entry = json[0];
+        const pts = entry.coordinates;
+        const labels = entry.part_label;
+        const circles = entry.circles || [];
+        const groups = {};
+        labels.forEach((lbl, i) => {
+          if (!groups[lbl]) groups[lbl] = { x: [], y: [], z: [] };
+          const [x, y, z] = pts[i];
+          groups[lbl].x.push(x);
+          groups[lbl].y.push(y);
+          groups[lbl].z.push(z);
+        });
 
-        clsD.onchange   = updateBatches;
-        batchD.onchange = loadPlot;
-        updateBatches();
-      }
+        const traces = Object.keys(groups)
+          .sort((a, b) => a - b)
+          .map((lbl) => ({
+            x: groups[lbl].x,
+            y: groups[lbl].y,
+            z: groups[lbl].z,
+            mode: "markers",
+            type: "scatter3d",
+            name: "Part " + lbl,
+            marker: { size: 5, opacity: 0.8, color: getColorForPart(lbl) },
+            hoverinfo: "x+y+z",
+          }));
+
+        Plotly.newPlot(
+          vizDiv,
+          traces,
+          {
+            scene: {
+              xaxis: { range: [-10, 10] },
+              yaxis: { range: [-10, 10] },
+              zaxis: { range: [-10, 10] },
+            },
+            margin: { l: 0, r: 0, t: 0, b: 0 },
+            hovermode: "closest",
+            legend: {
+              x: 0,
+              y: 1,
+              xanchor: "left",
+              yanchor: "top",
+              bgcolor: "rgba(255,255,255,0.7)",
+            },
+          },
+          { responsive: true }
+        ).then(() => {
+          circleCount = circles.length;
+          circleSelect.innerHTML = "";
+
+          const defaultOption = document.createElement("option");
+          defaultOption.disabled = true;
+          defaultOption.selected = true;
+          defaultOption.textContent = "Select circle";
+          circleSelect.appendChild(defaultOption);
+
+          circles.forEach((circle, i) => {
+            const opt = document.createElement("option");
+            opt.value = i;
+            opt.textContent = `circle${i}`;
+            circleSelect.appendChild(opt);
+          });
+        });
+      });
+  }
+
+  function updateBatches() {
+    const batches = mapping[clsD.value] || [];
+    batchD.innerHTML = "";
+    batches.forEach((b) => {
+      const o = document.createElement("option");
+      o.value = o.text = b;
+      batchD.appendChild(o);
+    });
+    loadPlot();
+  }
+
+  clsD.onchange = updateBatches;
+  batchD.onchange = loadPlot;
+  updateBatches();
+}
 
       // ----------------------------------------------------------------
       // Mode Toggle Wiring

@@ -242,6 +242,9 @@ def update_points(request):
             cx = data.get("cx")
             cy = data.get("cy")
             cz = data.get("cz")
+            nx = data.get("nx")
+            ny = data.get("ny")
+            nz = data.get("nz")
             r  = data.get("r")
 
             if None in (cx, cy, cz, r):
@@ -256,7 +259,7 @@ def update_points(request):
             # Add circle
             if "circles" not in point_obj:
                 point_obj["circles"] = []
-            circle_data = [cx, cy, cz, r]
+            circle_data = [cx, cy, cz, nx, ny, nz, r]
             if circle_data not in point_obj["circles"]:
                 point_obj["circles"].append(circle_data)
 
