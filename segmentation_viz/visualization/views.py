@@ -263,6 +263,41 @@ def update_points(request):
             if circle_data not in point_obj["circles"]:
                 point_obj["circles"].append(circle_data)
 
+        elif action == "add_handle":
+            pts = data.get("points", [])
+            point_clouds = data.get("point_clouds", [])
+            handle_index = data.get("handle_index", 0)
+            
+            if not pts:
+                return HttpResponseBadRequest("Missing handle points")
+            
+            # Store handles in the same format as arrows - array of coordinate pairs
+            if "handles" not in point_obj:
+                point_obj["handles"] = []
+            
+            # Convert handle points to the same format as arrows: array of [x, y, z] coordinates
+            handle_coordinates = []
+            for i in range(len(pts) - 1):
+                # Each handle segment is a pair of coordinates, like arrows
+                handle_coordinates.append([
+                    [pts[i]["x"], pts[i]["y"], pts[i]["z"]],
+                    [pts[i + 1]["x"], pts[i + 1]["y"], pts[i + 1]["z"]]
+                ])
+            
+            # Add handle with point cloud metadata
+            handle_data = {
+                "coordinates": handle_coordinates,
+                "point_clouds": point_clouds,  # Store the associated point cloud data
+                "handle_index": handle_index,
+                "total_points": len(pts)
+            }
+            
+            # Add or update handle
+            if handle_index < len(point_obj["handles"]):
+                point_obj["handles"][handle_index] = handle_data
+            else:
+                point_obj["handles"].append(handle_data)
+
         else:
             return HttpResponseBadRequest("Unknown action")
         

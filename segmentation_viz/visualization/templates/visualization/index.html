@@ -46,6 +46,10 @@
             <input type="radio" name="mode" value="ransac" />
             RANSAC Mode
           </label>
+          <label>
+            <input type="radio" name="mode" value="handle" />
+            Handle Mode
+          </label>
         </div>
       </div>
 
@@ -78,7 +82,7 @@
       <!-- Screw-mode controls -->
       <div id="screw-dropdown-container" style="margin-bottom: 12px;" class="dropdown-wrapper">
         <label for="screw-dropdown">Screw</label>
-        <select id="screw-dropdown" class="dropdown"> 
+        <select id="screw-dropdown" class="dropdown">
           <!-- Options will be populated dynamically -->
         </select>
       </div>
@@ -139,7 +143,79 @@
         </select>
       </div>
     </div>
-    
+
+    <!-- Handle-mode controls -->
+      <div
+      id="handle-controls"
+      style="
+        display: none;
+        flex-direction: row;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        margin: 10px auto;
+      "
+    >
+      <button
+        id="start-handle-button"
+        style="
+          padding: 8px 16px;
+          font-size: 16px;
+          border: none;
+          border-radius: 5px;
+          background-color: #28a745;
+          color: white;
+          cursor: pointer;
+          margin: 5px;
+          outline: none;
+        "
+      >
+        Start Drawing Handle
+      </button>
+      <button
+        id="finish-handle-button"
+        style="
+          padding: 8px 16px;
+          font-size: 16px;
+          border: none;
+          border-radius: 5px;
+          background-color: #dc3545;
+          color: white;
+          margin: 5px;
+          outline: none;
+          opacity: 0.6;
+        "
+      >
+        Finish Handle
+      </button>
+      <button
+        id="clear-handle-button"
+        style="
+          padding: 8px 16px;
+          font-size: 16px;
+          border: none;
+          border-radius: 5px;
+          background-color: #6c757d;
+          color: white;
+          margin: 5px;
+          outline: none;
+        "
+      >
+        Clear Handle
+      </button>
+      <div style="margin-top: 8px; margin-left: 20px;">
+        <label for="handle-dropdown">Handle</label>
+        <select
+          id="handle-dropdown"
+          class="dropdown"
+          style="margin-left: 8px; padding: 4px 8px; font-size: 14px;"
+        >
+          <option value="">Select a handle</option>
+          <!-- dynamically populated: handle0, handle1, … -->
+        </select>
+      </div>
+    </div>
+   
 
       <!-- Plotly visualization and overlays -->
       <div id="visualization" style="width: 100%; height: 600px"></div>
@@ -177,6 +253,12 @@
           <li>Select RANSAC Mode from the toggle buttons</li>
           <li>Once 3 points are selected, clickPlot RANSAC Circleto draw the best-fit circle</li>
           <li>Starting a new RANSAC segment will clear all visible circles from the plot</li>
+          <li>Select Handle Mode from the toggle buttons</li>
+          <li>Click "Start Drawing Handle" to begin creating a cup handle</li>
+          <li>Click on orange point cloud (top rim) and drag to green point cloud (bottom) to create a C-shaped handle</li>
+          <li>Click "Finish Handle" to complete and save the handle</li>
+          <li>Use "Clear Handle" to remove the current handle being drawn</li>
+          <li>Select existing handles from the dropdown to view them</li>
         </ul>
       </div>
     </div>
@@ -232,6 +314,11 @@
         container.style.display = show ? "flex" : "none";
       }
 
+      function toggleHandleUI(show) {
+        const container = document.getElementById("handle-controls");
+        container.style.display = show ? "flex" : "none";
+      }
+
       const vizDiv = document.getElementById("visualization");
       let viz = null,
         currentPopup = null;
@@ -272,9 +359,10 @@
         toggleSegmentUI(false);
         toggleRANSACUI(false);
         toggleScrewUI(true);
+        toggleHandleUI(false);
         Plotly.purge(vizDiv);
         clearPlotlyEventListeners();
-        
+       
         if (currentPopup) {
           currentPopup.remove();
           currentPopup = null;
@@ -311,7 +399,7 @@
             dir_z: Math.sign(vec.z)
           };
         }
-  
+ 
         function drawUnitArrow(point, vec) {
           // 1) delete any old arrow
           if (arrowTraceIndex !== null) {
@@ -582,9 +670,9 @@
 
         // Load the initial plot
         loadPlot();
-      
+     
       }
-      
+     
       // ----------------------------------------------------------------
       // Segment Mode Stub
       // ----------------------------------------------------------------
@@ -592,6 +680,8 @@
         toggleSegmentUI(true);
         toggleRANSACUI(false);
         toggleScrewUI(false);
+        toggleHandleUI(false);
+
         // clearPlotlyEventListeners();
         var mapping = JSON.parse("{{ mapping_json|escapejs }}");
         var classDropdown = document.getElementById("class-dropdown");
@@ -1283,7 +1373,7 @@
             });
         }
       }
-      
+     
       // ----------------------------------------------------------------
       // RANSAC Mode Stub
       // ----------------------------------------------------------------
@@ -1291,6 +1381,7 @@
   toggleSegmentUI(false);
   toggleScrewUI(false);
   toggleRANSACUI(true);
+  toggleHandleUI(false);
   Plotly.purge(vizDiv);
   clearPlotlyEventListeners();
   if (currentPopup) {
@@ -1665,13 +1756,676 @@
 }
 
       // ----------------------------------------------------------------
+      // Handle Mode Implementation
+      // ----------------------------------------------------------------
+      function initHandleMode() {
+        toggleSegmentUI(false);
+        toggleScrewUI(false);
+        toggleRANSACUI(false);
+        toggleHandleUI(true);
+        Plotly.purge(vizDiv);
+        clearPlotlyEventListeners();
+        if (currentPopup) {
+          currentPopup.remove();
+          currentPopup = null;
+        }
+
+        const startBtn = document.getElementById("start-handle-button");
+        const finishBtn = document.getElementById("finish-handle-button");
+        const clearBtn = document.getElementById("clear-handle-button");
+        const clsD = document.getElementById("class-dropdown");
+        const batchD = document.getElementById("batch-dropdown");
+        const handleSelect = document.getElementById("handle-dropdown");
+
+        let isDrawingHandle = false;
+        let handlePoints = [];
+        let handleCount = 0;
+        let currentHandleTraceIndex = null;
+        let previewTraceIndex = null;
+        let cupCenter = { x: 0, y: 0, z: 0 }; // Will be calculated from cup data
+
+        // Function to calculate cup center from point cloud data
+        function calculateCupCenter(coordinates) {
+          if (!coordinates || coordinates.length === 0) return { x: 0, y: 0, z: 0 };
+         
+          let sumX = 0, sumY = 0, sumZ = 0;
+          coordinates.forEach(coord => {
+            sumX += coord[0];
+            sumY += coord[1];
+            sumZ += coord[2];
+          });
+         
+          return {
+            x: sumX / coordinates.length,
+            y: sumY / coordinates.length,
+            z: sumZ / coordinates.length
+          };
+        }
+
+        // Function to calculate total distance of a path
+        function calculateTotalDistance(points) {
+          let totalDistance = 0;
+          for (let i = 0; i < points.length - 1; i++) {
+            const dx = points[i + 1].x - points[i].x;
+            const dy = points[i + 1].y - points[i].y;
+            const dz = points[i + 1].z - points[i].z;
+            totalDistance += Math.sqrt(dx * dx + dy * dy + dz * dz);
+          }
+          return totalDistance;
+        }
+
+        // Function to generate smooth curve points using Catmull-Rom spline
+        function generateSmoothCurve(points, numPoints = 50) {
+          if (points.length < 2) return points;
+          if (points.length === 2) {
+            // For just 2 points, create a proper cup handle shape
+            return createCupHandleShape(points[0], points[1], numPoints);
+          }
+         
+          const result = [];
+         
+          // Add first point
+          result.push(points[0]);
+         
+          // For multiple points, create a simple C-shaped handle
+          if (points.length > 2) {
+            // Just use the first and last points to create a simple C-shape
+            return createCupHandleShape(points[0], points[points.length - 1], numPoints);
+          }
+         
+          // Add last point
+          result.push(points[points.length - 1]);
+         
+          return result;
+        }
+
+        // Catmull-Rom spline interpolation
+        function catmullRomSpline(p0, p1, p2, p3, t) {
+          const t2 = t * t;
+          const t3 = t2 * t;
+         
+          const x = 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3);
+          const y = 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3);
+          const z = 0.5 * ((2 * p1.z) + (-p0.z + p2.z) * t + (2 * p0.z - 5 * p1.z + 4 * p2.z - p3.z) * t2 + (-p0.z + 3 * p1.z - 3 * p2.z + p3.z) * t3);
+         
+          return { x, y, z };
+        }
+
+        // Create a simple C-shaped cup handle from orange to green - OUTSIDE the cup
+        function createCupHandleShape(p1, p2, numPoints = 50) {
+          const result = [];
+         
+          // Calculate the distance and direction between start and end points
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          const dz = p2.z - p1.z;
+          const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+         
+          // Calculate the center point of the handle
+          const centerX = (p1.x + p2.x) / 2;
+          const centerY = (p1.y + p2.y) / 2;
+          const centerZ = (p1.z + p2.z) / 2;
+         
+          // Calculate the direction from cup center to the handle center
+          // This ensures the handle curves OUTWARD from the cup
+          const cupToHandleX = centerX - cupCenter.x;
+          const cupToHandleY = centerY - cupCenter.y;
+          const cupToHandleLength = Math.sqrt(cupToHandleX * cupToHandleX + cupToHandleY * cupToHandleY);
+         
+          // Simple C-shape: extend outward from the cup
+          const outwardDistance = distance * 0.4; // Handle extends 40% of the distance outward
+         
+          // Calculate perpendicular vector for outward curve (simple C-shape)
+          const perpX = -dy; // Perpendicular to the line from orange to green
+          const perpY = dx;
+          const perpLength = Math.sqrt(perpX * perpX + perpY * perpY);
+         
+          if (perpLength > 0 && cupToHandleLength > 0) {
+            // Normalize the perpendicular vector
+            const normPerpX = perpX / perpLength;
+            const normPerpY = perpY / perpLength;
+           
+            // Normalize the cup-to-handle direction
+            const normCupToHandleX = cupToHandleX / cupToHandleLength;
+            const normCupToHandleY = cupToHandleY / cupToHandleLength;
+           
+            // Create a simple C-shaped curve that curves OUTWARD from the cup
+            for (let i = 0; i <= numPoints; i++) {
+              const t = i / numPoints;
+             
+              // Linear interpolation between start and end points
+              const x = p1.x + t * dx;
+              const y = p1.y + t * dy;
+              const z = p1.z + t * dz;
+             
+              // Simple C-curve: maximum outward at the middle, tapering to ends
+              const curveFactor = Math.sin(t * Math.PI); // 0 at ends, 1 at middle
+             
+              // Apply the C-curve OUTWARD from the cup
+              // Use the cup-to-handle direction to ensure outward curve
+              const outwardX = normCupToHandleX * curveFactor * outwardDistance;
+              const outwardY = normCupToHandleY * curveFactor * outwardDistance;
+             
+              const curveX = x + outwardX;
+              const curveY = y + outwardY;
+              const curveZ = z; // Keep Z simple, no vertical curve
+             
+              result.push({ x: curveX, y: curveY, z: curveZ });
+            }
+          } else {
+            // Fallback: simple straight line if calculations fail
+            for (let i = 0; i <= numPoints; i++) {
+              const t = i / numPoints;
+              result.push({
+                x: p1.x + t * dx,
+                y: p1.y + t * dy,
+                z: p1.z + t * dz
+              });
+            }
+          }
+         
+          return result;
+        }
+
+        // Function to create a more natural handle curve with proper cup handle shape
+        function createHandleCurve(startPoint, endPoint, controlPoints = []) {
+          if (controlPoints.length === 0) {
+            // If no control points, create a simple arc
+          const midX = (startPoint.x + endPoint.x) / 2;
+          const midY = (startPoint.y + endPoint.y) / 2;
+          const midZ = (startPoint.z + endPoint.z) / 2;
+         
+            // Create a control point that makes the handle curve outward like a real cup handle
+            const distance = Math.sqrt(
+              Math.pow(endPoint.x - startPoint.x, 2) +
+              Math.pow(endPoint.y - startPoint.y, 2) +
+              Math.pow(endPoint.z - startPoint.z, 2)
+            );
+           
+            // Calculate perpendicular direction for the curve
+            const dx = endPoint.x - startPoint.x;
+            const dy = endPoint.y - startPoint.y;
+            const dz = endPoint.z - startPoint.z;
+           
+            // Create a perpendicular vector (simplified)
+            const perpX = -dy;
+            const perpY = dx;
+            const perpZ = 0;
+           
+            const perpLength = Math.sqrt(perpX * perpX + perpY * perpY + perpZ * perpZ);
+            const controlDistance = distance * 0.3; // Control how much the handle curves out
+           
+            const controlPoint = {
+              x: midX + (perpX / perpLength) * controlDistance,
+              y: midY + (perpY / perpLength) * controlDistance,
+              z: midZ + (perpZ / perpLength) * controlDistance
+            };
+           
+            controlPoints = [controlPoint];
+          }
+         
+          const curvePoints = [startPoint];
+          curvePoints.push(...controlPoints);
+          curvePoints.push(endPoint);
+         
+          // Generate smooth curve
+          return generateSmoothCurve(curvePoints, 100);
+        }
+
+        function drawHandlePreview(points) {
+          if (previewTraceIndex !== null) {
+            try {
+              Plotly.deleteTraces(vizDiv, previewTraceIndex);
+            } catch (e) {
+              console.warn("Error removing preview trace:", e);
+            }
+          }
+
+          if (points.length < 2) return;
+
+          const curvePoints = generateSmoothCurve(points, 50);
+          const xs = curvePoints.map(p => p.x);
+          const ys = curvePoints.map(p => p.y);
+          const zs = curvePoints.map(p => p.z);
+
+          Plotly.addTraces(vizDiv, {
+            x: xs,
+            y: ys,
+            z: zs,
+            mode: "lines",
+            type: "scatter3d",
+            line: { width: 6, color: "orange" },
+            name: "Handle Preview",
+            showlegend: false,
+            hoverinfo: "none"
+          });
+         
+          previewTraceIndex = vizDiv.data.length - 1;
+        }
+
+        function drawFinalHandle(points, handleIndex) {
+          if (currentHandleTraceIndex !== null) {
+            try {
+              Plotly.deleteTraces(vizDiv, currentHandleTraceIndex);
+            } catch (e) {
+              console.warn("Error removing current handle trace:", e);
+            }
+          }
+
+          if (points.length < 2) return;
+
+          const curvePoints = generateSmoothCurve(points, 100);
+          const xs = curvePoints.map(p => p.x);
+          const ys = curvePoints.map(p => p.y);
+          const zs = curvePoints.map(p => p.z);
+
+          Plotly.addTraces(vizDiv, {
+            x: xs,
+            y: ys,
+            z: zs,
+            mode: "lines",
+            type: "scatter3d",
+            line: { width: 8, color: "purple" },
+            name: `handle${handleIndex}`,
+            showlegend: true
+          });
+         
+          currentHandleTraceIndex = vizDiv.data.length - 1;
+        }
+
+        startBtn.onclick = () => {
+          isDrawingHandleMode = true;
+          handlePoints = [];
+          handlePointClouds = [];
+          finishBtn.disabled = false;
+          finishBtn.style.opacity = 1;
+          statusMsg.textContent = "Click on orange point cloud (top rim) and drag to green point cloud (bottom) to create a C-shaped handle.";
+
+          // Clear any existing preview
+          if (previewTraceIndex !== null) {
+            try {
+              Plotly.deleteTraces(vizDiv, previewTraceIndex);
+              previewTraceIndex = null;
+            } catch (e) {}
+          }
+        };
+
+        finishBtn.onclick = () => {
+          if (!isDrawingHandleMode || handlePoints.length < 2) {
+            statusMsg.textContent = "Please draw at least 2 points for the handle.";
+            return;
+          }
+         
+          isDrawingHandleMode = false;
+          finishBtn.disabled = true;
+          finishBtn.style.opacity = 0.6;
+
+          // Remove preview trace
+          if (previewTraceIndex !== null) {
+            try {
+              Plotly.deleteTraces(vizDiv, previewTraceIndex);
+              previewTraceIndex = null;
+            } catch (e) {}
+          }
+
+          // Draw final handle
+          drawFinalHandle(handlePoints, handleCount);
+
+          // Save handle to backend with point cloud data
+            fetch("/update_points/", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "add_handle",
+                data: {
+                  cls_label: clsD.value,
+                  batch_num: batchD.value,
+                  points: handlePoints,
+                  point_clouds: handlePointClouds, // Include the point clouds that make up the handle
+                  handle_index: handleCount
+                }
+              })
+            }).then(response => response.json())
+            .then(data => {
+              if (data.status === "success") {
+                statusMsg.textContent = `Handle ${handleCount} saved successfully with ${handlePointClouds.length} point clouds!`;
+              } else {
+                statusMsg.textContent = `Error saving handle: ${data.message}`;
+              }
+            })
+            .catch(error => {
+              console.error("Error saving handle:", error);
+              statusMsg.textContent = "Error saving handle";
+            });
+           
+          // Add to dropdown
+          const opt = document.createElement("option");
+          opt.value = handleCount;
+          opt.textContent = `handle${handleCount}`;
+          handleSelect.appendChild(opt);
+
+          statusMsg.textContent = `Handle ${handleCount} created successfully!`;
+          handleCount++;
+          handlePoints = [];
+        };
+
+        clearBtn.onclick = () => {
+          isDrawingHandleMode = false;
+          handlePoints = [];
+          handlePointClouds = [];
+          finishBtn.disabled = true;
+          finishBtn.style.opacity = 0.6;
+         
+          // Clear preview
+          if (previewTraceIndex !== null) {
+            try {
+            Plotly.deleteTraces(vizDiv, previewTraceIndex);
+            previewTraceIndex = null;
+            } catch (e) {}
+          }
+
+          // Clear current handle
+          if (currentHandleTraceIndex !== null) {
+            try {
+              Plotly.deleteTraces(vizDiv, currentHandleTraceIndex);
+              currentHandleTraceIndex = null;
+            } catch (e) {}
+          }
+
+          statusMsg.textContent = "Handle drawing cleared.";
+        };
+
+        // Drag-and-draw functionality for 3D handle creation on cup surface
+        let isDrawingHandleMode = false;
+        let isDragging = false;
+        let lastMousePos = null;
+        let last3DPos = null;
+        let handlePointClouds = []; // Store the point clouds that make up the handle
+
+        // Function to find the closest point cloud to mouse position
+        function findClosestPointCloud(mouseX, mouseY, allTraces) {
+          let closestPoint = null;
+          let closestDistance = Infinity;
+          let closestTraceIndex = -1;
+         
+          // Check all traces for point clouds
+          allTraces.forEach((trace, traceIndex) => {
+            if (trace.type === 'scatter3d' && trace.mode === 'markers') {
+              // This is a point cloud trace
+              trace.x.forEach((x, i) => {
+                const y = trace.y[i];
+                const z = trace.z[i];
+               
+                // Project 3D point to 2D screen coordinates
+                const scene = vizDiv.layout.scene;
+                const xRange = scene.xaxis.range;
+                const yRange = scene.yaxis.range;
+               
+                const screenX = ((x - xRange[0]) / (xRange[1] - xRange[0])) * vizDiv.getBoundingClientRect().width;
+                const screenY = ((yRange[1] - y) / (yRange[1] - yRange[0])) * vizDiv.getBoundingClientRect().height;
+               
+                // Calculate distance from mouse to this point
+                const distance = Math.sqrt((mouseX - screenX) ** 2 + (mouseY - screenY) ** 2);
+               
+                if (distance < closestDistance && distance < 20) { // 20 pixel threshold
+                  closestDistance = distance;
+                  closestPoint = { x, y, z, traceIndex, pointIndex: i };
+                  closestTraceIndex = traceIndex;
+                }
+              });
+            }
+          });
+         
+          return closestPoint;
+        }
+
+        // Handle mouse events for drag-and-draw on cup surface
+        vizDiv.onmousedown = (e) => {
+          if (!isDrawingHandleMode) return;
+         
+            isDragging = true;
+            lastMousePos = { x: e.clientX, y: e.clientY };
+         
+          const rect = vizDiv.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const mouseY = e.clientY - rect.top;
+         
+          // Find the closest point cloud to start the handle
+          const closestPoint = findClosestPointCloud(mouseX, mouseY, vizDiv.data);
+         
+          if (closestPoint) {
+            // Start handle from a point on the cup surface
+            handlePoints.push({ x: closestPoint.x, y: closestPoint.y, z: closestPoint.z });
+            handlePointClouds.push({
+              x: closestPoint.x,
+              y: closestPoint.y,
+              z: closestPoint.z,
+              traceIndex: closestPoint.traceIndex,
+              pointIndex: closestPoint.pointIndex
+            });
+            statusMsg.textContent = "Drag over cup surface to draw handle path...";
+          } else {
+            statusMsg.textContent = "Click on the cup surface to start drawing handle...";
+          }
+        };
+
+        vizDiv.onmousemove = (e) => {
+          if (!isDrawingHandleMode || !isDragging) return;
+
+          const rect = vizDiv.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const mouseY = e.clientY - rect.top;
+         
+          // Add point if mouse moved significantly
+          if (lastMousePos) {
+            const dx = e.clientX - lastMousePos.x;
+            const dy = e.clientY - lastMousePos.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+           
+            if (distance > 5) { // Threshold for smooth drawing
+              // Find the closest point cloud to continue the handle
+              const closestPoint = findClosestPointCloud(mouseX, mouseY, vizDiv.data);
+             
+              if (closestPoint) {
+                // Add point from cup surface
+                handlePoints.push({ x: closestPoint.x, y: closestPoint.y, z: closestPoint.z });
+                handlePointClouds.push({
+                  x: closestPoint.x,
+                  y: closestPoint.y,
+                  z: closestPoint.z,
+                  traceIndex: closestPoint.traceIndex,
+                  pointIndex: closestPoint.pointIndex
+                });
+               
+                lastMousePos = { x: e.clientX, y: e.clientY };
+               
+                // Update preview in real-time
+                drawHandlePreview(handlePoints);
+              }
+            }
+          }
+        };
+
+        vizDiv.onmouseup = (e) => {
+          if (isDragging) {
+          isDragging = false;
+            statusMsg.textContent = `Handle path drawn with ${handlePoints.length} points on cup surface. Click 'Finish Handle' to complete.`;
+          }
+        };
+
+        // Function to load and display handle data
+        function loadHandleData(handleIndex) {
+          if (handleIndex === "" || handleIndex === null) return;
+         
+          // Load handle data from the JSON file
+          fetch(`/static/${clsD.value}_${batchD.value}_points.json`)
+            .then(response => response.json())
+            .then(data => {
+              if (data && data.length > 0 && data[0].handles && data[0].handles[handleIndex]) {
+                const handleData = data[0].handles[handleIndex];
+                const coordinates = handleData.coordinates;
+                const pointClouds = handleData.point_clouds || [];
+                const totalPoints = handleData.total_points || 0;
+               
+                statusMsg.textContent = `Handle ${handleIndex}: ${totalPoints} points, ${pointClouds.length} point clouds`;
+               
+                // Display handle coordinates in console for debugging
+                console.log("Handle Coordinates:", coordinates);
+                console.log("Handle Point Clouds:", pointClouds);
+                console.log("Total Points:", totalPoints);
+               
+                // You can add more detailed display here, such as highlighting the point clouds
+                // or showing them in a separate panel
+              } else {
+                statusMsg.textContent = `Handle ${handleIndex} not found`;
+              }
+            })
+            .catch(error => {
+              console.error("Error loading handle data:", error);
+              statusMsg.textContent = "Error loading handle data";
+            });
+        }
+
+        // Handle dropdown selection
+        handleSelect.onchange = () => {
+          const idx = parseInt(handleSelect.value);
+          if (isNaN(idx)) return;
+         
+          loadHandleData(idx);
+
+          // Load and display selected handle
+          fetch(`/api/points/${clsD.value}/${batchD.value}/?_=${Date.now()}`)
+            .then((r) => r.json())
+            .then((json) => {
+              const entry = json[0];
+              const handles = entry.handles || [];
+              const handle = handles[idx];
+             
+              if (!handle) {
+                console.warn("No handle data found at index", idx);
+            return;
+          }
+
+              // Clear current handle display
+              if (currentHandleTraceIndex !== null) {
+                try {
+                  Plotly.deleteTraces(vizDiv, currentHandleTraceIndex);
+                } catch (e) {}
+              }
+
+              // Draw selected handle
+              drawFinalHandle(handle.points, idx);
+              statusMsg.textContent = `Displaying handle ${idx}`;
+            })
+            .catch(console.error);
+        };
+
+        function loadPlot() {
+          fetch(`/api/points/${clsD.value}/${batchD.value}/?_=${Date.now()}`)
+            .then((r) => r.json())
+            .then((json) => {
+              const entry = json[0];
+              const pts = entry.coordinates;
+              const labels = entry.part_label;
+              const handles = entry.handles || [];
+
+              // Calculate cup center for proper handle positioning
+              cupCenter = calculateCupCenter(pts);
+             
+              const groups = {};
+             
+              labels.forEach((lbl, i) => {
+                if (!groups[lbl]) groups[lbl] = { x: [], y: [], z: [] };
+                const [x, y, z] = pts[i];
+                groups[lbl].x.push(x);
+                groups[lbl].y.push(y);
+                groups[lbl].z.push(z);
+              });
+
+              const traces = Object.keys(groups)
+                .sort((a, b) => a - b)
+                .map((lbl) => ({
+                x: groups[lbl].x,
+                y: groups[lbl].y,
+                z: groups[lbl].z,
+                mode: "markers",
+                type: "scatter3d",
+                name: "Part " + lbl,
+                marker: { size: 5, opacity: 0.8, color: getColorForPart(lbl) },
+                  hoverinfo: "x+y+z",
+                }));
+
+              Plotly.newPlot(
+                vizDiv,
+                traces,
+                {
+                scene: {
+                    xaxis: { range: [-10, 10] },
+                    yaxis: { range: [-10, 10] },
+                    zaxis: { range: [-10, 10] },
+                },
+                margin: { l: 0, r: 0, t: 0, b: 0 },
+                hovermode: "closest",
+                legend: {
+                    x: 0,
+                    y: 1,
+                    xanchor: "left",
+                    yanchor: "top",
+                    bgcolor: "rgba(255,255,255,0.7)",
+                  },
+                },
+                { responsive: true }
+              ).then(() => {
+                handleCount = handles.length;
+                handleSelect.innerHTML = "";
+
+                const defaultOption = document.createElement("option");
+                defaultOption.disabled = true;
+                defaultOption.selected = true;
+                defaultOption.textContent = "Select handle";
+                handleSelect.appendChild(defaultOption);
+
+                handles.forEach((handle, i) => {
+                  const opt = document.createElement("option");
+                  opt.value = i;
+                  opt.textContent = `handle${i}`;
+                  handleSelect.appendChild(opt);
+                });
+
+                // Reset handle drawing state
+                isDrawingHandle = false;
+              handlePoints = [];
+              finishBtn.disabled = true;
+                finishBtn.style.opacity = 0.6;
+              });
+            });
+        }
+
+        function updateBatches() {
+          const batches = mapping[clsD.value] || [];
+          batchD.innerHTML = "";
+            batches.forEach((b) => {
+              const o = document.createElement("option");
+              o.value = o.text = b;
+              batchD.appendChild(o);
+            });
+          loadPlot();
+        }
+
+        clsD.onchange = updateBatches;
+        batchD.onchange = loadPlot;
+        updateBatches();
+      }
+
+      // ----------------------------------------------------------------
       // Mode Toggle Wiring
       // ----------------------------------------------------------------
       document.querySelectorAll('input[name="mode"]').forEach((radio) => {
         radio.onchange = () => {
           if (radio.value === "screw") initScrewMode();
           else if (radio.value === "segment") initSegmentMode();
-          else initRANSACMode();
+          else if (radio.value === "ransac") initRANSACMode();
+          else if (radio.value === "handle") initHandleMode();
         };
       });
 
