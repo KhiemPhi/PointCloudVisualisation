@@ -292,6 +292,20 @@ def update_points(request):
             else:
                 point_obj["handles"].append(handle_data)
 
+        elif action == "add_annotated_segment":
+            pts = data.get("points", [])
+            annotated_label = data.get("annotated_label", None)
+            if annotated_label is None:
+                return HttpResponseBadRequest("Missing annotated_label for annotated segment")
+            
+            coords = [[p["x"], p["y"], p["z"]] for p in pts if "x" in p and "y" in p and "z" in p]
+            if "annotated_segments" not in point_obj:
+                point_obj["annotated_segments"] = []
+            point_obj["annotated_segments"].append({
+                "coordinates": coords,
+                "annotated_label": annotated_label
+            })
+
         else:
             return HttpResponseBadRequest("Unknown action")
         

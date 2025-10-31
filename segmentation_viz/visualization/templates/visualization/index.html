@@ -47,6 +47,10 @@
             RANSAC Mode
           </label>
           <label>
+            <input type="radio" name="mode" value="annotated-segment" />
+            Annotated Segment Mode
+          </label>
+          <label>
             <input type="radio" name="mode" value="handle" />
             Handle Mode
           </label>
@@ -215,7 +219,95 @@
         </select>
       </div>
     </div>
-   
+
+      <!-- Annotated-segment controls -->
+      <div
+        id="annotated-segment-controls"
+        style="
+          display: none;
+          flex-direction: row;
+          justify-content: center;
+          align-items: center;
+          text-align: center;
+          margin: 10px auto;
+          gap: 12px;
+        "
+      >
+        <button
+          id="start-annotated-button"
+          style="
+            padding: 8px 16px;
+            font-size: 16px;
+            border: none;
+            border-radius: 5px;
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+            margin: 5px;
+            outline: none;
+          "
+        >
+          Start Segment Selection
+        </button>
+        <div
+          id="annotated-label-container"
+          style="display: none; flex-direction: column; align-items: flex-start;"
+        >
+          <label for="annotated-label-input" style="font-size: 14px; margin-bottom: 4px;">Segment Label</label>
+          <input
+            id="annotated-label-input"
+            type="text"
+            placeholder="Enter label"
+            style="
+              padding: 6px 10px;
+              font-size: 14px;
+              border: 1px solid #ccc;
+              border-radius: 4px;
+              width: 180px;
+            "
+          />
+        </div>
+        <button
+          id="save-annotated-button"
+          style="
+            padding: 8px 16px;
+            font-size: 16px;
+            border: none;
+            border-radius: 5px;
+            background-color: #28a745;
+            color: white;
+            cursor: pointer;
+            margin: 5px;
+            outline: none;
+          "
+        >
+          Save Segment
+        </button>
+        <button
+          id="clear-annotated-button"
+          style="
+            padding: 8px 16px;
+            font-size: 16px;
+            border: none;
+            border-radius: 5px;
+            background-color: #6c757d;
+            color: white;
+            cursor: pointer;
+            margin: 5px;
+            outline: none;
+          "
+        >
+          Clear Segment
+        </button>
+        <div style="display: flex; flex-direction: column; align-items: flex-start;">
+          <label for="annotated-dropdown" style="font-size: 14px; margin-bottom: 4px;">Annotated Segment</label>
+          <select
+            id="annotated-dropdown"
+            class="dropdown"
+            style="width: 200px; padding: 6px 10px; font-size: 14px;"
+          ></select>
+        </div>
+      </div>
 
       <!-- Plotly visualization and overlays -->
       <div id="visualization" style="width: 100%; height: 600px"></div>
@@ -319,6 +411,11 @@
         container.style.display = show ? "flex" : "none";
       }
 
+      function toggleAnnotatedSegmentUI(show) {
+        const container = document.getElementById("annotated-segment-controls");
+        container.style.display = show ? "flex" : "none";
+      }
+
       const vizDiv = document.getElementById("visualization");
       let viz = null,
         currentPopup = null;
@@ -360,6 +457,7 @@
         toggleRANSACUI(false);
         toggleScrewUI(true);
         toggleHandleUI(false);
+        toggleAnnotatedSegmentUI(false);
         Plotly.purge(vizDiv);
         clearPlotlyEventListeners();
        
@@ -681,6 +779,7 @@
         toggleRANSACUI(false);
         toggleScrewUI(false);
         toggleHandleUI(false);
+        toggleAnnotatedSegmentUI(false);
 
         // clearPlotlyEventListeners();
         var mapping = JSON.parse("{{ mapping_json|escapejs }}");
@@ -1382,6 +1481,7 @@
   toggleScrewUI(false);
   toggleRANSACUI(true);
   toggleHandleUI(false);
+  toggleAnnotatedSegmentUI(false);
   Plotly.purge(vizDiv);
   clearPlotlyEventListeners();
   if (currentPopup) {
@@ -1763,6 +1863,7 @@
         toggleScrewUI(false);
         toggleRANSACUI(false);
         toggleHandleUI(true);
+        toggleAnnotatedSegmentUI(false);
         Plotly.purge(vizDiv);
         clearPlotlyEventListeners();
         if (currentPopup) {
@@ -2416,6 +2517,510 @@
         updateBatches();
       }
 
+
+      // ----------------------------------------------------------------
+      // Annotated Segment Mode Implementation
+      // ----------------------------------------------------------------
+      function initAnnotatedSegmentMode() {
+        toggleSegmentUI(false);
+        toggleScrewUI(false);
+        toggleRANSACUI(false);
+        toggleHandleUI(false);
+        toggleAnnotatedSegmentUI(true);
+        Plotly.purge(vizDiv);
+        clearPlotlyEventListeners();
+        if (currentPopup) {
+          currentPopup.remove();
+          currentPopup = null;
+        }
+
+        const startBtn = document.getElementById("start-annotated-button");
+        const clearBtn = document.getElementById("clear-annotated-button");
+        const saveBtn = document.getElementById("save-annotated-button");
+        const labelInput = document.getElementById("annotated-label-input");
+  const labelContainer = document.getElementById("annotated-label-container");
+  const annotatedSelect = document.getElementById("annotated-dropdown");
+        const clsD = document.getElementById("class-dropdown");
+        const batchD = document.getElementById("batch-dropdown");
+
+        let isSelecting = false;
+        let selectedPoints = [];
+        let selectionTraceIndex = null;
+        let selectionTraceReady = false;
+        let suppressClick = false;
+  let savedAnnotatedSegments = [];
+  let savedAnnotatedTraceIndex = null;
+  let savedAnnotatedTraceReady = false;
+
+        function clearSelectionTrace() {
+          if (!selectionTraceReady || selectionTraceIndex === null) {
+            return Promise.resolve();
+          }
+          suppressClick = true;
+          return Plotly.restyle(
+            vizDiv,
+            { x: [[]], y: [[]], z: [[]] },
+            [selectionTraceIndex]
+          )
+            .catch((err) => {
+              console.warn("Unable to reset annotated segment trace:", err);
+            })
+            .finally(() => {
+              suppressClick = false;
+            });
+        }
+
+        function redrawSelectionTrace() {
+          if (!selectionTraceReady || selectionTraceIndex === null) {
+            return;
+          }
+          const xs = selectedPoints.map((p) => p.x);
+          const ys = selectedPoints.map((p) => p.y);
+          const zs = selectedPoints.map((p) => p.z);
+          suppressClick = true;
+          Plotly.restyle(
+            vizDiv,
+            { x: [xs], y: [ys], z: [zs] },
+            [selectionTraceIndex]
+          )
+            .catch((err) => {
+              console.warn("Unable to update annotated segment trace:", err);
+            })
+            .finally(() => {
+              suppressClick = false;
+            });
+        }
+
+        function clearSavedAnnotatedTrace() {
+          if (!savedAnnotatedTraceReady || savedAnnotatedTraceIndex === null) {
+            return Promise.resolve();
+          }
+          suppressClick = true;
+          return Plotly.restyle(
+            vizDiv,
+            { x: [[]], y: [[]], z: [[]] },
+            [savedAnnotatedTraceIndex]
+          )
+            .catch((err) => {
+              console.warn("Unable to clear saved annotated segment trace:", err);
+            })
+            .finally(() => {
+              suppressClick = false;
+            });
+        }
+
+        function displaySavedAnnotatedSegment(index) {
+          if (
+            !savedAnnotatedTraceReady ||
+            savedAnnotatedTraceIndex === null ||
+            !savedAnnotatedSegments.length
+          ) {
+            return;
+          }
+          const segment = savedAnnotatedSegments[index];
+          if (!segment) {
+            clearSavedAnnotatedTrace();
+            return;
+          }
+          const coords = segment.coordinates || [];
+          const xs = [];
+          const ys = [];
+          const zs = [];
+          coords.forEach((coord) => {
+            if (Array.isArray(coord) && coord.length >= 3) {
+              xs.push(coord[0]);
+              ys.push(coord[1]);
+              zs.push(coord[2]);
+            } else if (coord && typeof coord === "object") {
+              xs.push(coord.x ?? coord[0]);
+              ys.push(coord.y ?? coord[1]);
+              zs.push(coord.z ?? coord[2]);
+            }
+          });
+          suppressClick = true;
+          Plotly.restyle(
+            vizDiv,
+            { x: [xs], y: [ys], z: [zs] },
+            [savedAnnotatedTraceIndex]
+          )
+            .catch((err) => {
+              console.warn("Unable to render saved annotated segment:", err);
+            })
+            .finally(() => {
+              suppressClick = false;
+            });
+        }
+
+        function refreshAnnotatedDropdown(autoIndex = null) {
+          annotatedSelect.innerHTML = "";
+          if (!savedAnnotatedSegments.length) {
+            const opt = document.createElement("option");
+            opt.value = "";
+            opt.textContent = "No annotated segments";
+            opt.disabled = true;
+            opt.selected = true;
+            annotatedSelect.appendChild(opt);
+            clearSavedAnnotatedTrace();
+            return;
+          }
+
+          const placeholder = document.createElement("option");
+          placeholder.value = "";
+          placeholder.textContent = "Select annotated segment";
+          placeholder.disabled = true;
+          placeholder.selected = true;
+          annotatedSelect.appendChild(placeholder);
+
+          savedAnnotatedSegments.forEach((seg, idx) => {
+            const opt = document.createElement("option");
+            opt.value = idx;
+            opt.textContent = seg.annotated_label || `segment${idx}`;
+            annotatedSelect.appendChild(opt);
+          });
+
+          if (
+            typeof autoIndex === "number" &&
+            !Number.isNaN(autoIndex) &&
+            savedAnnotatedSegments[autoIndex]
+          ) {
+            annotatedSelect.value = String(autoIndex);
+            displaySavedAnnotatedSegment(autoIndex);
+          } else {
+            annotatedSelect.value = "";
+            clearSavedAnnotatedTrace();
+          }
+        }
+
+        function prepareClassDropdown() {
+          if (!clsD.options.length) {
+            Object.keys(mapping)
+              .sort()
+              .forEach((c) => {
+                const opt = document.createElement("option");
+                opt.value = c;
+                opt.text = c;
+                clsD.appendChild(opt);
+              });
+          }
+          if (!clsD.value && clsD.options.length) {
+            clsD.value = clsD.options[0].value;
+          }
+        }
+
+        function loadPlot() {
+          const classValue = clsD.value;
+          const batchValue = batchD.value;
+          isSelecting = false;
+          selectedPoints = [];
+          labelContainer.style.display = "none";
+          labelInput.value = "";
+          clearSavedAnnotatedTrace();
+          if (!classValue || !batchValue) {
+            vizDiv.innerHTML =
+              '<div style="padding: 20px; text-align: center;">Please select a valid object and batch</div>';
+            statusMsg.textContent = "Select an object and batch to begin.";
+            selectionTraceReady = false;
+            selectionTraceIndex = null;
+            suppressClick = false;
+            clearSelectionTrace();
+            coordOverlay.textContent = "x: --, y: --, z: --";
+            savedAnnotatedSegments = [];
+            refreshAnnotatedDropdown();
+            return;
+          }
+
+          statusMsg.textContent = "Loading data…";
+          annotatedSelect.innerHTML = "";
+          const loadingOpt = document.createElement("option");
+          loadingOpt.value = "";
+          loadingOpt.textContent = "Loading...";
+          loadingOpt.disabled = true;
+          loadingOpt.selected = true;
+          annotatedSelect.appendChild(loadingOpt);
+          fetch(`/api/points/${classValue}/${batchValue}/?_=${Date.now()}`)
+            .then((response) => {
+              if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+              }
+              return response.json();
+            })
+            .then((json) => {
+              const entry = json[0];
+              const pts = entry.coordinates || [];
+              const labels = entry.part_label || [];
+              savedAnnotatedSegments = entry.annotated_segments || [];
+              const groups = {};
+              labels.forEach((lbl, idx) => {
+                if (!groups[lbl]) {
+                  groups[lbl] = { x: [], y: [], z: [] };
+                }
+                const [x, y, z] = pts[idx];
+                groups[lbl].x.push(x);
+                groups[lbl].y.push(y);
+                groups[lbl].z.push(z);
+              });
+
+              const traces = Object.keys(groups)
+                .sort((a, b) => a - b)
+                .map((lbl) => ({
+                  x: groups[lbl].x,
+                  y: groups[lbl].y,
+                  z: groups[lbl].z,
+                  mode: "markers",
+                  type: "scatter3d",
+                  name: "Part " + lbl,
+                  marker: { size: 5, opacity: 0.8, color: getColorForPart(lbl) },
+                  hoverinfo: "x+y+z",
+                }));
+
+              selectionTraceReady = false;
+              selectionTraceIndex = traces.length;
+              traces.push({
+                x: [],
+                y: [],
+                z: [],
+                mode: "lines+markers",
+                type: "scatter3d",
+                name: "Annotated Segment",
+                marker: { size: 7, color: "#ff1493" },
+                line: { width: 4, color: "#ff1493" },
+                hoverinfo: "x+y+z",
+                showlegend: false,
+              });
+
+              savedAnnotatedTraceReady = false;
+              savedAnnotatedTraceIndex = traces.length;
+              traces.push({
+                x: [],
+                y: [],
+                z: [],
+                mode: "lines+markers",
+                type: "scatter3d",
+                name: "Saved Annotated Segment",
+                marker: { size: 6, color: "#00bcd4" },
+                line: { width: 3, color: "#00bcd4" },
+                hoverinfo: "x+y+z",
+                showlegend: false,
+              });
+
+              Plotly.newPlot(
+                vizDiv,
+                traces,
+                {
+                  scene: {
+                    xaxis: { range: [-10, 10], title: "X" },
+                    yaxis: { range: [-10, 10], title: "Y" },
+                    zaxis: { range: [-10, 10], title: "Z" },
+                  },
+                  margin: { l: 0, r: 0, t: 0, b: 0 },
+                  hovermode: "closest",
+                  legend: {
+                    x: 0,
+                    y: 1,
+                    xanchor: "left",
+                    yanchor: "top",
+                    bgcolor: "rgba(255,255,255,0.7)",
+                  },
+                },
+                { responsive: true }
+              ).then(() => {
+                savedAnnotatedTraceReady = true;
+                selectionTraceReady = true;
+                selectedPoints = [];
+                isSelecting = false;
+                clearSelectionTrace();
+                refreshAnnotatedDropdown();
+                annotatedSelect.value = "";
+                statusMsg.textContent =
+                  "Click 'Start Segment Selection' to begin picking points.";
+                labelContainer.style.display = "none";
+                labelInput.value = "";
+
+                vizDiv.on("plotly_click", (eventData) => {
+                  if (!isSelecting || suppressClick) return;
+                  const point = eventData.points[0];
+                  if (
+                    selectionTraceReady &&
+                    selectionTraceIndex !== null &&
+                    point.curveNumber === selectionTraceIndex
+                  ) {
+                    return;
+                  }
+                  selectedPoints.push({
+                    x: point.x,
+                    y: point.y,
+                    z: point.z,
+                  });
+                  redrawSelectionTrace();
+                  statusMsg.textContent = `Segment contains ${selectedPoints.length} point(s).`;
+                });
+
+                vizDiv.on("plotly_hover", (eventData) => {
+                  const point = eventData.points[0];
+                  coordOverlay.textContent = `x: ${point.x.toFixed(
+                    2
+                  )}, y: ${point.y.toFixed(2)}, z: ${point.z.toFixed(2)}`;
+                });
+
+                vizDiv.on("plotly_unhover", () => {
+                  coordOverlay.textContent = "x: --, y: --, z: --";
+                });
+              });
+            })
+            .catch((error) => {
+              console.error("Error loading annotated segment data:", error);
+              vizDiv.innerHTML = `<div style="padding: 20px; text-align: center; color: red;">${error.message}</div>`;
+              statusMsg.textContent = "Loading failed.";
+              selectionTraceReady = false;
+              selectionTraceIndex = null;
+              suppressClick = false;
+              savedAnnotatedTraceReady = false;
+              savedAnnotatedTraceIndex = null;
+              savedAnnotatedSegments = [];
+              isSelecting = false;
+              selectedPoints = [];
+              annotatedSelect.innerHTML = "";
+              labelContainer.style.display = "none";
+              labelInput.value = "";
+              coordOverlay.textContent = "x: --, y: --, z: --";
+            });
+        }
+
+        function updateBatches() {
+          const classKey = (clsD.value || "").toLowerCase();
+          const previousBatch = batchD.value;
+          batchD.innerHTML = "";
+          const batches = mapping[classKey] || [];
+          if (!batches.length) {
+            const opt = document.createElement("option");
+            opt.value = "";
+            opt.text = "No batches available";
+            batchD.appendChild(opt);
+            vizDiv.innerHTML =
+              '<div style="padding: 20px; text-align: center;">No batches available</div>';
+            statusMsg.textContent = "No batches available for this object.";
+            clearSelectionTrace();
+            selectedPoints = [];
+            return;
+          }
+          batches.forEach((b) => {
+            const opt = document.createElement("option");
+            opt.value = b;
+            opt.text = b;
+            batchD.appendChild(opt);
+          });
+          if (previousBatch && batches.includes(previousBatch)) {
+            batchD.value = previousBatch;
+          }
+          loadPlot();
+        }
+
+        startBtn.onclick = () => {
+          isSelecting = false;
+          selectedPoints = [];
+          clearSelectionTrace()
+            .finally(() => clearSavedAnnotatedTrace())
+            .finally(() => {
+              coordOverlay.textContent = "x: --, y: --, z: --";
+              statusMsg.textContent =
+                "Selecting segment points. Click on the plot to add them in order.";
+              annotatedSelect.value = "";
+              labelInput.value = "";
+              labelContainer.style.display = "flex";
+              isSelecting = true;
+              labelInput.focus();
+            });
+        };
+
+        clearBtn.onclick = () => {
+          isSelecting = false;
+          selectedPoints = [];
+          clearSelectionTrace().finally(() => {
+            coordOverlay.textContent = "x: --, y: --, z: --";
+            statusMsg.textContent = "Annotated segment cleared.";
+            labelContainer.style.display = "none";
+            labelInput.value = "";
+          });
+        };
+
+        saveBtn.onclick = () => {
+          if (!selectedPoints.length) {
+            statusMsg.textContent = "Select at least one point before saving.";
+            return;
+          }
+          const annotated_label = labelInput.value.trim();
+          const savedPointCount = selectedPoints.length;
+          statusMsg.textContent = "Saving segment…";
+          fetch("/update_points/", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "add_annotated_segment",
+              data: {
+                annotated_label: annotated_label,
+                points: selectedPoints,
+                cls_label: clsD.value,
+                batch_num: batchD.value
+              }
+            })
+          })
+            .then((response) => {
+              if (!response.ok) {
+                throw new Error(`Save failed (${response.status})`);
+              }
+              return response.json().catch(() => ({}));
+            })
+            .then(() => {
+              const labelSuffix = annotated_label ? ` "${annotated_label}"` : "";
+              statusMsg.textContent = `Saved segment${labelSuffix} with ${savedPointCount} point(s).`;
+              loadPlot();
+            })
+            .catch((err) => {
+              console.error("Error saving annotated segment:", err);
+              statusMsg.textContent = err.message || "Failed to save segment.";
+            });
+
+          isSelecting = false;
+          selectedPoints = [];
+          labelContainer.style.display = "none";
+          labelInput.value = "";
+          clearSelectionTrace().finally(() => {
+            coordOverlay.textContent = "x: --, y: --, z: --";
+          });
+        };
+
+        annotatedSelect.onchange = () => {
+          const idx = parseInt(annotatedSelect.value, 10);
+          if (isSelecting) {
+            isSelecting = false;
+            selectedPoints = [];
+            labelContainer.style.display = "none";
+            labelInput.value = "";
+            clearSelectionTrace();
+          } else {
+            labelContainer.style.display = "none";
+          }
+          if (Number.isNaN(idx)) {
+            clearSavedAnnotatedTrace();
+            return;
+          }
+          const segment = savedAnnotatedSegments[idx];
+          if (!segment) {
+            clearSavedAnnotatedTrace();
+            statusMsg.textContent = "Segment not found.";
+            return;
+          }
+          displaySavedAnnotatedSegment(idx);
+          const segName = segment.annotated_label || `segment${idx}`;
+          statusMsg.textContent = `Showing annotated segment ${segName}.`;
+        };
+
+        prepareClassDropdown();
+        clsD.onchange = updateBatches;
+        batchD.onchange = loadPlot;
+        updateBatches();
+      }
+      
       // ----------------------------------------------------------------
       // Mode Toggle Wiring
       // ----------------------------------------------------------------
@@ -2425,6 +3030,7 @@
           else if (radio.value === "segment") initSegmentMode();
           else if (radio.value === "ransac") initRANSACMode();
           else if (radio.value === "handle") initHandleMode();
+          else if (radio.value === "annotated-segment") initAnnotatedSegmentMode();
         };
       });
 
