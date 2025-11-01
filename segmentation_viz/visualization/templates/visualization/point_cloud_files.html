@@ -1,0 +1,136 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Point Cloud Files</title>
+    <style>
+      body {
+        font-family: "Roboto", Arial, sans-serif;
+        background-color: #f5f6fa;
+        color: #212529;
+        margin: 0;
+        padding: 0;
+      }
+
+      .page-wrapper {
+        max-width: 960px;
+        margin: 40px auto;
+        background: #ffffff;
+        border-radius: 12px;
+        box-shadow: 0 12px 24px rgba(0, 0, 0, 0.08);
+        padding: 32px;
+      }
+
+      h1 {
+        margin-top: 0;
+        font-size: 28px;
+        font-weight: 500;
+      }
+
+      p.description {
+        color: #5c636a;
+        margin-bottom: 24px;
+      }
+
+      .actions {
+        margin-bottom: 20px;
+      }
+
+      .actions a {
+        display: inline-block;
+        padding: 8px 16px;
+        background-color: #0d6efd;
+        color: #ffffff;
+        border-radius: 6px;
+        text-decoration: none;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      thead {
+        background-color: #212529;
+        color: #ffffff;
+      }
+
+      th,
+      td {
+        padding: 12px 16px;
+        text-align: left;
+      }
+
+      tbody tr:nth-child(even) {
+        background-color: #f1f3f5;
+      }
+
+      tbody tr:hover {
+        background-color: #e9ecef;
+      }
+
+      .empty-state {
+        padding: 24px;
+        text-align: center;
+        background-color: #f8f9fa;
+        border-radius: 8px;
+        border: 1px dashed #ced4da;
+        color: #6c757d;
+      }
+
+      .file-links a {
+        color: #0d6efd;
+        text-decoration: none;
+        margin-right: 12px;
+      }
+
+      .file-links a:hover {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page-wrapper">
+      <h1>Point Cloud JSON Files</h1>
+      <p class="description">
+        Browse the JSON point cloud assets available under the project's static directory.
+      </p>
+
+      <div class="actions">
+        <a href="{% url 'index' %}">← Back to Visualization</a>
+      </div>
+
+      {% if files %}
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>File Name</th>
+              <th>Size (KB)</th>
+              <th>Last Modified</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for file in files %}
+              <tr>
+                <td>{{ forloop.counter }}</td>
+                <td>{{ file.name }}</td>
+                <td>{{ file.size_kb|floatformat:2 }}</td>
+                <td>{{ file.modified|date:"Y-m-d H:i:s" }}</td>
+                <td class="file-links">
+                  <a href="{{ file.url }}" target="_blank" rel="noopener">Open</a>
+                  <a href="{{ file.url }}" download>Download</a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="empty-state">No JSON point cloud files were found in the static directory.</div>
+      {% endif %}
+    </div>
+  </body>
+</html>

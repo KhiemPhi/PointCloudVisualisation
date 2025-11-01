@@ -4,6 +4,7 @@ from django.conf import settings
 from django.http import JsonResponse, HttpResponseBadRequest
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import csrf_exempt
+from datetime import datetime
 
 def get_points_json(request, cls_label, batch_num):
     file_path = os.path.join(settings.BASE_DIR, 'static', f"{cls_label}_{batch_num}_points.json")
@@ -44,6 +45,29 @@ def index(request):
         'classes': classes,
         'mapping_json': mapping_json,
     })
+
+def list_point_cloud_files(request):
+    static_dir = os.path.join(settings.BASE_DIR, 'static')
+    files = []
+
+    if os.path.isdir(static_dir):
+        static_url_base = settings.STATIC_URL
+        if not static_url_base.endswith('/'):
+            static_url_base += '/'
+        for entry in sorted(os.listdir(static_dir)):
+            full_path = os.path.join(static_dir, entry)
+            if os.path.isfile(full_path) and entry.lower().endswith('.json'):
+                size_kb = round(os.path.getsize(full_path) / 1024, 2)
+                modified_dt = datetime.fromtimestamp(os.path.getmtime(full_path))
+                files.append({
+                    "name": entry,
+                    "size_kb": size_kb,
+                    "modified": modified_dt,
+                    "url": f"{static_url_base}{entry}",
+                })
+
+    context = {"files": files}
+    return render(request, 'visualization/point_cloud_files.html', context)
 
 def coordinates_match(coord, x, y, z, tol=1e-6):
     # Compare the first three elements of the coordinate array.
