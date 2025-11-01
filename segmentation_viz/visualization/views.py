@@ -1,10 +1,18 @@
 from django.shortcuts import render
-import os, glob, json, math
+import os, glob, json, math, re
 from django.conf import settings
-from django.http import JsonResponse, HttpResponseBadRequest
+from django.http import JsonResponse, HttpResponseBadRequest, Http404, HttpResponse
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import csrf_exempt
+from django.utils.text import get_valid_filename
 from datetime import datetime
+
+POINT_CLOUD_NAME_RE = re.compile(r'^[A-Za-z0-9]+_[0-9]+_points\.json$')
+
+
+def _is_valid_point_cloud_filename(file_name: str) -> bool:
+    return bool(POINT_CLOUD_NAME_RE.fullmatch(file_name))
+
 
 def get_points_json(request, cls_label, batch_num):
     file_path = os.path.join(settings.BASE_DIR, 'static', f"{cls_label}_{batch_num}_points.json")
@@ -48,26 +56,129 @@ def index(request):
 
 def list_point_cloud_files(request):
     static_dir = os.path.join(settings.BASE_DIR, 'static')
+    os.makedirs(static_dir, exist_ok=True)
+
+    upload_error = None
+    upload_message = None
+
+    if request.method == 'POST':
+        uploaded = request.FILES.get('point_cloud_file')
+        if not uploaded:
+            upload_error = "Select a JSON file to upload."
+        elif not uploaded.name.lower().endswith('.json'):
+            upload_error = "Only .json files are supported."
+        else:
+            safe_name = get_valid_filename(uploaded.name)
+            if not safe_name:
+                upload_error = "Unable to derive a valid file name."
+            else:
+                if not safe_name.lower().endswith('.json'):
+                    safe_name = f"{safe_name}.json"
+                if not _is_valid_point_cloud_filename(safe_name):
+                    upload_error = "Filename must follow objname_batch_points.json (e.g. mug_001_points.json)."
+                else:
+                    dest_path = os.path.join(static_dir, safe_name)
+                    file_bytes = b''.join(uploaded.chunks())
+                    try:
+                        decoded = file_bytes.decode('utf-8')
+                    except UnicodeDecodeError:
+                        upload_error = "Uploaded file must be UTF-8 encoded JSON."
+                    else:
+                        try:
+                            parsed = json.loads(decoded)
+                        except json.JSONDecodeError as exc:
+                            upload_error = f"Invalid JSON: {exc}"
+                        else:
+                            with open(dest_path, 'w', encoding='utf-8') as out_file:
+                                json.dump(parsed, out_file, indent=2)
+                            upload_message = f"Uploaded {safe_name} to the static directory."
+
     files = []
+    static_url_base = settings.STATIC_URL
+    if not static_url_base.endswith('/'):
+        static_url_base += '/'
 
-    if os.path.isdir(static_dir):
-        static_url_base = settings.STATIC_URL
-        if not static_url_base.endswith('/'):
-            static_url_base += '/'
-        for entry in sorted(os.listdir(static_dir)):
-            full_path = os.path.join(static_dir, entry)
-            if os.path.isfile(full_path) and entry.lower().endswith('.json'):
-                size_kb = round(os.path.getsize(full_path) / 1024, 2)
-                modified_dt = datetime.fromtimestamp(os.path.getmtime(full_path))
-                files.append({
-                    "name": entry,
-                    "size_kb": size_kb,
-                    "modified": modified_dt,
-                    "url": f"{static_url_base}{entry}",
-                })
+    for entry in sorted(os.listdir(static_dir)):
+        full_path = os.path.join(static_dir, entry)
+        if os.path.isfile(full_path) and entry.lower().endswith('.json'):
+            size_kb = round(os.path.getsize(full_path) / 1024, 2)
+            modified_dt = datetime.fromtimestamp(os.path.getmtime(full_path))
+            files.append({
+                "name": entry,
+                "size_kb": size_kb,
+                "modified": modified_dt,
+                "url": f"{static_url_base}{entry}",
+            })
 
-    context = {"files": files}
+    context = {
+        "files": files,
+        "upload_error": upload_error,
+        "upload_message": upload_message,
+    }
     return render(request, 'visualization/point_cloud_files.html', context)
+
+def edit_point_cloud_file(request, file_name):
+    static_dir = os.path.join(settings.BASE_DIR, 'static')
+    safe_name = os.path.basename(file_name)
+    if safe_name != file_name or not safe_name.lower().endswith('.json'):
+        return HttpResponseBadRequest("Invalid file selection.")
+    if not _is_valid_point_cloud_filename(safe_name):
+        return HttpResponseBadRequest("Invalid file selection.")
+
+    file_path = os.path.join(static_dir, safe_name)
+    if not os.path.isfile(file_path):
+        raise Http404("File not found")
+
+    error = None
+    success_message = None
+
+    if request.method == 'POST':
+        submitted_content = request.POST.get('file_content', '')
+        if not submitted_content.strip():
+            error = "File content cannot be empty."
+            content_for_form = submitted_content
+        else:
+            try:
+                parsed = json.loads(submitted_content)
+            except json.JSONDecodeError as exc:
+                error = f"Invalid JSON: {exc}"
+                content_for_form = submitted_content
+            else:
+                with open(file_path, 'w', encoding='utf-8') as out_file:
+                    json.dump(parsed, out_file, indent=2)
+                success_message = f"Saved changes to {safe_name}."
+                content_for_form = json.dumps(parsed, indent=2)
+    else:
+        with open(file_path, 'r', encoding='utf-8') as in_file:
+            content_for_form = in_file.read()
+        try:
+            parsed = json.loads(content_for_form)
+            content_for_form = json.dumps(parsed, indent=2)
+        except json.JSONDecodeError:
+            pass
+
+    context = {
+        "file_name": safe_name,
+        "file_content": content_for_form,
+        "error": error,
+        "success_message": success_message,
+    }
+    return render(request, 'visualization/edit_point_cloud_file.html', context)
+
+
+def download_point_cloud_sample(request):
+    sample_payload = [
+        {
+            "coordinates": [[0.0, 0.0, 0.0]],
+            "part_label": [0],
+            "cls_label": "object_name"
+        }
+    ]
+    body = json.dumps(sample_payload, indent=2)
+    response = HttpResponse(body, content_type='application/json; charset=utf-8')
+    response['Content-Disposition'] = 'attachment; filename=objname_batchnum_points.json'
+    return response
+
 
 def coordinates_match(coord, x, y, z, tol=1e-6):
     # Compare the first three elements of the coordinate array.

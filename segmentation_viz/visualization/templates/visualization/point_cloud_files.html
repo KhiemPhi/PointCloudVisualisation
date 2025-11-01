@@ -47,6 +47,63 @@
         text-decoration: none;
       }
 
+      .upload-form {
+        margin-bottom: 28px;
+        padding: 16px;
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+      }
+
+      .upload-form label {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 8px;
+      }
+
+      .upload-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .upload-form input[type="file"] {
+        flex: 1 1 300px;
+      }
+
+      .upload-form button {
+        padding: 8px 18px;
+        background-color: #198754;
+        color: #ffffff;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      .upload-form button:hover {
+        background-color: #157347;
+      }
+
+      .upload-form .download-sample {
+        display: inline-block;
+        padding: 8px 18px;
+        background-color: #6c757d;
+        color: #ffffff;
+        border-radius: 6px;
+        text-decoration: none;
+      }
+
+      .upload-form .download-sample:hover {
+        background-color: #5c636a;
+      }
+
+      .upload-form .hint {
+        margin-top: 12px;
+        font-size: 13px;
+        color: #5c636a;
+      }
+
       table {
         width: 100%;
         border-collapse: collapse;
@@ -89,6 +146,19 @@
       .file-links a:hover {
         text-decoration: underline;
       }
+
+      .message {
+        margin-top: 12px;
+        font-size: 14px;
+      }
+
+      .message.success {
+        color: #198754;
+      }
+
+      .message.error {
+        color: #dc3545;
+      }
     </style>
   </head>
   <body>
@@ -101,6 +171,22 @@
       <div class="actions">
         <a href="{% url 'index' %}">← Back to Visualization</a>
       </div>
+
+      <form method="post" enctype="multipart/form-data" class="upload-form">
+        {% csrf_token %}
+        <label for="point-cloud-file">Upload New Point Cloud JSON</label>
+        <div class="upload-controls">
+          <input id="point-cloud-file" type="file" name="point_cloud_file" accept=".json" required />
+          <button type="submit">Upload</button>
+          <a class="download-sample" href="{% url 'download_point_cloud_sample' %}">Download Sample</a>
+        </div>
+        {% if upload_error %}
+          <p class="message error">{{ upload_error }}</p>
+        {% elif upload_message %}
+          <p class="message success">{{ upload_message }}</p>
+        {% endif %}
+        <p class="hint">Accepted format: objname_batch_points.json (example: cup_123_points.json).</p>
+      </form>
 
       {% if files %}
         <table>
@@ -123,6 +209,7 @@
                 <td class="file-links">
                   <a href="{{ file.url }}" target="_blank" rel="noopener">Open</a>
                   <a href="{{ file.url }}" download>Download</a>
+                  <a href="{% url 'edit_point_cloud_file' file.name %}">Modify</a>
                 </td>
               </tr>
             {% endfor %}

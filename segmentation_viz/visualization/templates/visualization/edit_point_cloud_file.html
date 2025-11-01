@@ -1,0 +1,144 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Edit {{ file_name }}</title>
+    <style>
+      body {
+        font-family: "Roboto", Arial, sans-serif;
+        background-color: #f5f6fa;
+        color: #212529;
+        margin: 0;
+      }
+
+      .page-wrapper {
+        max-width: 960px;
+        margin: 40px auto;
+        background: #ffffff;
+        border-radius: 12px;
+        box-shadow: 0 12px 24px rgba(0, 0, 0, 0.08);
+        padding: 32px;
+      }
+
+      h1 {
+        margin-top: 0;
+        font-size: 28px;
+        font-weight: 500;
+      }
+
+      p.description {
+        color: #5c636a;
+        margin-bottom: 24px;
+      }
+
+      .actions {
+        margin-bottom: 20px;
+      }
+
+      .actions a {
+        display: inline-block;
+        padding: 8px 16px;
+        background-color: #0d6efd;
+        color: #ffffff;
+        border-radius: 6px;
+        text-decoration: none;
+      }
+
+      form {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      textarea {
+        width: 100%;
+        min-height: 520px;
+        padding: 16px;
+        font-family: "Consolas", "Courier New", monospace;
+        font-size: 14px;
+        line-height: 1.5;
+        color: #212529;
+        border: 1px solid #ced4da;
+        border-radius: 8px;
+        resize: vertical;
+        background-color: #f8f9fa;
+      }
+
+      textarea:focus {
+        outline: none;
+        border-color: #0d6efd;
+        box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.25);
+        background-color: #ffffff;
+      }
+
+      .form-actions {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .form-actions button {
+        padding: 10px 20px;
+        background-color: #198754;
+        color: #ffffff;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      .form-actions button:hover {
+        background-color: #157347;
+      }
+
+      .form-actions a {
+        color: #0d6efd;
+        text-decoration: none;
+      }
+
+      .message {
+        padding: 12px 16px;
+        border-radius: 8px;
+        font-size: 14px;
+      }
+
+      .message.success {
+        background-color: #d1e7dd;
+        color: #0f5132;
+        border: 1px solid #badbcc;
+      }
+
+      .message.error {
+        background-color: #f8d7da;
+        color: #842029;
+        border: 1px solid #f5c2c7;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page-wrapper">
+      <h1>Edit {{ file_name }}</h1>
+      <p class="description">Update the JSON content below. Changes are saved directly to the static directory.</p>
+
+      <div class="actions">
+        <a href="{% url 'point_cloud_files' %}">← Back to File List</a>
+      </div>
+
+      {% if error %}
+        <div class="message error">{{ error }}</div>
+      {% elif success_message %}
+        <div class="message success">{{ success_message }}</div>
+      {% endif %}
+
+      <form method="post">
+        {% csrf_token %}
+        <textarea name="file_content" spellcheck="false">{% autoescape off %}{{ file_content }}{% endautoescape %}</textarea>
+        <div class="form-actions">
+          <button type="submit">Save Changes</button>
+          <a href="{% url 'point_cloud_files' %}">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </body>
+</html>
