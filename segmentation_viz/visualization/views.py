@@ -8,22 +8,164 @@ from django.utils.text import get_valid_filename
 from datetime import datetime
 
 POINT_CLOUD_NAME_RE = re.compile(r'^[A-Za-z0-9]+_[0-9]+_points\.json$')
+POINT_CLOUD_PLY_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_]*_[0-9]+\.ply$')
+
+
+def _derive_cls_batch(stem: str):
+    """Infer cls_label and batch_num from a filename stem.
+
+    Examples:
+      chair_12 -> ("chair", "12")
+      sample   -> ("sample", "0")
+      multi_part_name_7 -> ("multi_part_name", "7")
+    """
+    parts = stem.split('_')
+    if len(parts) >= 2 and parts[-1].isdigit():
+        batch_num = parts[-1]
+        cls_label = '_'.join(parts[:-1])
+    else:
+        cls_label, batch_num = stem, "0"
+    return cls_label, batch_num
+
+
+def _read_ply_coordinates(ply_path):
+    """Load XYZ coordinates from an ASCII .ply file. Extra properties are ignored."""
+    with open(ply_path, 'r') as f:
+        first = f.readline().strip()
+        if first != 'ply':
+            raise ValueError('Not a PLY file')
+
+        fmt_line = f.readline().strip()
+        if not fmt_line.startswith('format ascii'):
+            raise ValueError('Only ASCII .ply is supported')
+
+        vertex_count = 0
+        prop_names = []
+        while True:
+            line = f.readline()
+            if not line:
+                break
+            line = line.strip()
+            if line.startswith('element vertex'):
+                parts = line.split()
+                if len(parts) >= 3:
+                    vertex_count = int(parts[2])
+            elif line.startswith('property'):
+                tokens = line.split()
+                if len(tokens) >= 3:
+                    prop_names.append(tokens[-1])
+            elif line == 'end_header':
+                break
+
+        idx_x = prop_names.index('x') if 'x' in prop_names else None
+        idx_y = prop_names.index('y') if 'y' in prop_names else None
+        idx_z = prop_names.index('z') if 'z' in prop_names else None
+        if None in (idx_x, idx_y, idx_z):
+            raise ValueError('PLY is missing x/y/z properties')
+
+        coords = []
+        for _ in range(vertex_count):
+            row = f.readline()
+            if not row:
+                break
+            vals = row.strip().split()
+            coords.append([
+                float(vals[idx_x]),
+                float(vals[idx_y]),
+                float(vals[idx_z]),
+            ])
+        return coords
+
+
+def _write_ply_with_labels(ply_path, coordinates, labels):
+    """Write coordinates + integer labels back to an ASCII .ply file."""
+    count = min(len(coordinates), len(labels))
+    lines = [
+        'ply',
+        'format ascii 1.0',
+        'comment generated from json editor',
+        f'element vertex {count}',
+        'property float x',
+        'property float y',
+        'property float z',
+        'property int label',
+        'end_header',
+    ]
+    for i in range(count):
+        x, y, z = coordinates[i][:3]
+        lbl = int(labels[i]) if i < len(labels) else -1
+        lines.append(f"{x} {y} {z} {lbl}")
+
+    with open(ply_path, 'w') as f:
+        f.write('\n'.join(lines))
+
+
+def _ensure_json_from_ply(cls_label, batch_num):
+    """Create a JSON representation if a matching .ply exists and JSON does not."""
+    static_dir = os.path.join(settings.BASE_DIR, 'static')
+    json_path = os.path.join(static_dir, f"{cls_label}_{batch_num}_points.json")
+    if os.path.exists(json_path):
+        with open(json_path, 'r') as f:
+            return json.load(f)
+
+    ply_path = os.path.join(static_dir, f"{cls_label}_{batch_num}.ply")
+    if not os.path.exists(ply_path):
+        return None
+
+    coords_raw = _read_ply_coordinates(ply_path)
+    # Treat imported PLY points as custom so they can be reassigned via the existing UI flow.
+    coords = [[x, y, z, "custom"] for x, y, z in coords_raw]
+    content = [{
+        "coordinates": coords,
+        "part_label": [-1 for _ in coords],
+        "cls_label": cls_label,
+        "batch_num": batch_num,
+        "source_ply": os.path.relpath(ply_path, settings.BASE_DIR),
+    }]
+
+    with open(json_path, 'w') as f:
+        json.dump(content, f, indent=2)
+
+    return content
 
 
 def _is_valid_point_cloud_filename(file_name: str) -> bool:
     return bool(POINT_CLOUD_NAME_RE.fullmatch(file_name))
 
 
+def _is_valid_ply_filename(file_name: str) -> bool:
+    return bool(POINT_CLOUD_PLY_RE.fullmatch(file_name))
+
+
 def get_points_json(request, cls_label, batch_num):
     file_path = os.path.join(settings.BASE_DIR, 'static', f"{cls_label}_{batch_num}_points.json")
-    if not os.path.exists(file_path):
-        return HttpResponseBadRequest("File not found")
-    with open(file_path, 'r') as f:
-        data = json.load(f)
+    if os.path.exists(file_path):
+        with open(file_path, 'r') as f:
+            data = json.load(f)
+    else:
+        try:
+            data = _ensure_json_from_ply(cls_label, batch_num)
+        except Exception as exc:
+            return HttpResponseBadRequest(str(exc))
+        if data is None:
+            return HttpResponseBadRequest("File not found")
     return JsonResponse(data, safe=False)
 
 def index(request):
     static_dir = os.path.join(settings.BASE_DIR, 'static')
+    # Bootstrap: generate JSON for any PLY that doesn't have it yet.
+    ply_pattern = os.path.join(static_dir, '*.ply')
+    for ply_fp in glob.glob(ply_pattern):
+        stem = os.path.splitext(os.path.basename(ply_fp))[0]
+        cls_label, batch_num = _derive_cls_batch(stem)
+        json_fp = os.path.join(static_dir, f"{cls_label}_{batch_num}_points.json")
+        if not os.path.exists(json_fp):
+            try:
+                _ensure_json_from_ply(cls_label, batch_num)
+            except Exception:
+                # If conversion fails, skip silently; the user can fix the file and retry.
+                continue
+
     pattern = os.path.join(static_dir, '*_points.json')
     file_paths = glob.glob(pattern)
     
@@ -33,18 +175,15 @@ def index(request):
         file_name = os.path.basename(fp)  # e.g. airplane_0_points.json
         if file_name.endswith("_points.json"):
             prefix = file_name[:-len("_points.json")]  # e.g. airplane_0
-            parts = prefix.split('_')
-            if len(parts) >= 2:
-                class_name = parts[0]
-                batch_num = parts[1]
-                if class_name not in mapping:
-                    mapping[class_name] = []
-                if batch_num not in mapping[class_name]:
-                    mapping[class_name].append(batch_num)
+            class_name, batch_num = _derive_cls_batch(prefix)
+            if class_name not in mapping:
+                mapping[class_name] = []
+            if batch_num not in mapping[class_name]:
+                mapping[class_name].append(batch_num)
     
     # Sort batch numbers numerically.
     for cls in mapping:
-        mapping[cls].sort(key=lambda x: int(x))
+        mapping[cls].sort(key=lambda x: int(x) if str(x).isdigit() else x)
     
     classes = sorted(mapping.keys())
     mapping_json = json.dumps(mapping)
@@ -64,34 +203,60 @@ def list_point_cloud_files(request):
     if request.method == 'POST':
         uploaded = request.FILES.get('point_cloud_file')
         if not uploaded:
-            upload_error = "Select a JSON file to upload."
-        elif not uploaded.name.lower().endswith('.json'):
-            upload_error = "Only .json files are supported."
+            upload_error = "Select a JSON or ASCII PLY file to upload."
         else:
-            safe_name = get_valid_filename(uploaded.name)
-            if not safe_name:
-                upload_error = "Unable to derive a valid file name."
+            ext = os.path.splitext(uploaded.name)[1].lower()
+            if ext not in {'.json', '.ply'}:
+                upload_error = "Only .json or .ply files are supported."
             else:
-                if not safe_name.lower().endswith('.json'):
-                    safe_name = f"{safe_name}.json"
-                if not _is_valid_point_cloud_filename(safe_name):
-                    upload_error = "Filename must follow objname_batch_points.json (e.g. mug_001_points.json)."
+                safe_name = get_valid_filename(uploaded.name)
+                if not safe_name:
+                    upload_error = "Unable to derive a valid file name."
                 else:
-                    dest_path = os.path.join(static_dir, safe_name)
-                    file_bytes = b''.join(uploaded.chunks())
-                    try:
-                        decoded = file_bytes.decode('utf-8')
-                    except UnicodeDecodeError:
-                        upload_error = "Uploaded file must be UTF-8 encoded JSON."
+                    if ext == '.json' and not safe_name.lower().endswith('.json'):
+                        safe_name = f"{safe_name}.json"
+                    if ext == '.ply' and not safe_name.lower().endswith('.ply'):
+                        safe_name = f"{safe_name}.ply"
+
+                    if ext == '.json' and not _is_valid_point_cloud_filename(safe_name):
+                        upload_error = "Filename must follow objname_batch_points.json (e.g. mug_001_points.json)."
+                    elif ext == '.ply' and not _is_valid_ply_filename(safe_name):
+                        upload_error = "PLY filename must follow objname_batch.ply (e.g. mug_001.ply)."
                     else:
-                        try:
-                            parsed = json.loads(decoded)
-                        except json.JSONDecodeError as exc:
-                            upload_error = f"Invalid JSON: {exc}"
-                        else:
-                            with open(dest_path, 'w', encoding='utf-8') as out_file:
-                                json.dump(parsed, out_file, indent=2)
-                            upload_message = f"Uploaded {safe_name} to the static directory."
+                        dest_path = os.path.join(static_dir, safe_name)
+
+                        if ext == '.json':
+                            file_bytes = b''.join(uploaded.chunks())
+                            try:
+                                decoded = file_bytes.decode('utf-8')
+                            except UnicodeDecodeError:
+                                upload_error = "Uploaded file must be UTF-8 encoded JSON."
+                            else:
+                                try:
+                                    parsed = json.loads(decoded)
+                                except json.JSONDecodeError as exc:
+                                    upload_error = f"Invalid JSON: {exc}"
+                                else:
+                                    with open(dest_path, 'w', encoding='utf-8') as out_file:
+                                        json.dump(parsed, out_file, indent=2)
+                                    upload_message = f"Uploaded {safe_name} to the static directory."
+                        else:  # .ply
+                            # Save the raw PLY bytes
+                            with open(dest_path, 'wb') as out_file:
+                                for chunk in uploaded.chunks():
+                                    out_file.write(chunk)
+                            stem = os.path.splitext(safe_name)[0]
+                            cls_label, batch_num = _derive_cls_batch(stem)
+                            try:
+                                _ensure_json_from_ply(cls_label, batch_num)
+                                upload_message = (f"Uploaded {safe_name} and generated "
+                                                  f"{cls_label}_{batch_num}_points.json.")
+                            except Exception as exc:
+                                upload_error = f"Invalid PLY: {exc}"
+                                try:
+                                    os.remove(dest_path)
+                                except OSError:
+                                    pass
 
     files = []
     static_url_base = settings.STATIC_URL
@@ -100,7 +265,7 @@ def list_point_cloud_files(request):
 
     for entry in sorted(os.listdir(static_dir)):
         full_path = os.path.join(static_dir, entry)
-        if os.path.isfile(full_path) and entry.lower().endswith('.json'):
+        if os.path.isfile(full_path) and entry.lower().endswith(('.json', '.ply')):
             size_kb = round(os.path.getsize(full_path) / 1024, 2)
             modified_dt = datetime.fromtimestamp(os.path.getmtime(full_path))
             files.append({
@@ -108,6 +273,7 @@ def list_point_cloud_files(request):
                 "size_kb": size_kb,
                 "modified": modified_dt,
                 "url": f"{static_url_base}{entry}",
+                "can_edit": entry.lower().endswith('.json'),
             })
 
     context = {
@@ -236,6 +402,20 @@ def update_points(request):
          [x,y,z] (within tolerance) and updates the corresponding "part_label" to the new integer.
          The coordinate remains unchanged (with the "custom" flag preserved).
 
+    For "set_label":
+      {
+         "action": "set_label",
+         "data": {
+             "cls_label": <str>,
+             "batch_num": <str>,
+             "x": <float>,
+             "y": <float>,
+             "z": <float>,
+             "new_part_label": <int>
+         }
+      }
+      → Finds the first point (custom or original) whose XYZ matches within tolerance and sets its part_label.
+
     For "delete":
       {
          "action": "delete",
@@ -249,6 +429,9 @@ def update_points(request):
       }
       → Searches for a custom point with matching [x,y,z] (in an array of 4 elements) and deletes it
          from both "coordinates" and "part_label".
+
+        If a matching .ply file exists (either noted in "source_ply" or named <cls>_<batch>.ply), it will
+        be rewritten in ASCII format with an extra integer label column so edited labels stay in sync.
     """
     try:
         payload = json.loads(request.body)
@@ -299,6 +482,27 @@ def update_points(request):
                 return HttpResponseBadRequest("Custom point not found for reassign")
             point_obj["part_label"][found_index] = new_part_label
             # Do not remove the "custom" flag; it should remain to mark it as a custom point.
+
+        elif action == "set_label":
+            x = data.get("x")
+            y = data.get("y")
+            z = data.get("z")
+            new_part_label = data.get("new_part_label")
+            if x is None or y is None or z is None or new_part_label is None:
+                return HttpResponseBadRequest("Missing data for set_label")
+            try:
+                new_part_label = int(new_part_label)
+            except:
+                return HttpResponseBadRequest("new_part_label must be an integer")
+            found_index = None
+            for i, coord in enumerate(point_obj["coordinates"]):
+                # Accept either 3 or 4 length coords (custom or original)
+                if len(coord) >= 3 and coordinates_match(coord, x, y, z):
+                    found_index = i
+                    break
+            if found_index is None:
+                return HttpResponseBadRequest("Point not found for set_label")
+            point_obj["part_label"][found_index] = new_part_label
             
         elif action == "delete":
             x = data.get("x")
@@ -446,6 +650,19 @@ def update_points(request):
         
         with open(file_path, 'w') as f:
             json.dump(content, f, indent=2)
+
+        # If there is a corresponding PLY file, keep it in sync with labels.
+        try:
+            source_ply = point_obj.get("source_ply")
+            if source_ply:
+                ply_path = os.path.join(settings.BASE_DIR, source_ply)
+            else:
+                ply_path = os.path.join(settings.BASE_DIR, 'static', f"{cls_label}_{batch_num}.ply")
+            if os.path.exists(ply_path):
+                _write_ply_with_labels(ply_path, point_obj.get("coordinates", []), point_obj.get("part_label", []))
+        except Exception:
+            # Keep JSON success even if PLY sync fails.
+            pass
         
         return JsonResponse({"status": "success", "data": content})
     except Exception as e:

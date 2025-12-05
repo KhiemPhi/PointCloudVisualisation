@@ -163,9 +163,9 @@
   </head>
   <body>
     <div class="page-wrapper">
-      <h1>Point Cloud JSON Files</h1>
+      <h1>Point Cloud Files (JSON / PLY)</h1>
       <p class="description">
-        Browse the JSON point cloud assets available under the project's static directory.
+        Browse the point cloud assets under <code>static/</code>. ASCII <code>.ply</code> files are auto-converted to matching <code>_points.json</code> on first load.
       </p>
 
       <div class="actions">
@@ -174,9 +174,9 @@
 
       <form method="post" enctype="multipart/form-data" class="upload-form">
         {% csrf_token %}
-        <label for="point-cloud-file">Upload New Point Cloud JSON</label>
+        <label for="point-cloud-file">Upload New Point Cloud (JSON or ASCII PLY)</label>
         <div class="upload-controls">
-          <input id="point-cloud-file" type="file" name="point_cloud_file" accept=".json" required />
+          <input id="point-cloud-file" type="file" name="point_cloud_file" accept=".json,.ply" required />
           <button type="submit">Upload</button>
           <a class="download-sample" href="{% url 'download_point_cloud_sample' %}">Download Sample</a>
         </div>
@@ -185,7 +185,7 @@
         {% elif upload_message %}
           <p class="message success">{{ upload_message }}</p>
         {% endif %}
-        <p class="hint">Accepted format: objname_batch_points.json (example: cup_123_points.json).</p>
+        <p class="hint">Accepted formats: <code>objname_batch_points.json</code> (e.g. <code>cup_123_points.json</code>) or ASCII <code>objname_batch.ply</code> (e.g. <code>cup_123.ply</code>).</p>
       </form>
 
       {% if files %}
@@ -209,7 +209,9 @@
                 <td class="file-links">
                   <a href="{{ file.url }}" target="_blank" rel="noopener">Open</a>
                   <a href="{{ file.url }}" download>Download</a>
-                  <a href="{% url 'edit_point_cloud_file' file.name %}">Modify</a>
+                  {% if file.can_edit %}
+                    <a href="{% url 'edit_point_cloud_file' file.name %}">Modify</a>
+                  {% endif %}
                 </td>
               </tr>
             {% endfor %}

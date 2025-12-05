@@ -83,6 +83,13 @@
             class="dropdown"
             style="width: 150px"
           ></select>
+          <input
+            id="part-input"
+            type="number"
+            placeholder="New label"
+            style="width: 100px; margin-left: 8px; padding: 4px 6px;"
+          />
+          <button id="add-part-button" style="margin-left: 6px; padding: 4px 8px;">Add</button>
         </div>
       </div>
 
@@ -789,6 +796,8 @@
         var classDropdown = document.getElementById("class-dropdown");
         var batchDropdown = document.getElementById("batch-dropdown");
         var partDropdown = document.getElementById("part-dropdown");
+        var partInput = document.getElementById("part-input");
+        var addPartButton = document.getElementById("add-part-button");
         var selectedPartLabel = null;
         // Plotly viz element
         var viz = null;
@@ -797,6 +806,7 @@
         var selectedX = null,
           selectedY = null,
           selectedZ = null;
+        var selectedIsCustom = false;
 
         // --- Arrow drawing & selection globals ---
         var arrowPoints = [];
@@ -878,6 +888,7 @@
         // Mapping for loaded parts and original counts.
         var loadedPartTraceIndex = {};
         var loadedOrigCount = {};
+        var loadedCoordsByTrace = {};
 
         function showStatus(message, duration = 3000) {
           var statusElement = document.getElementById("status-message");
@@ -937,6 +948,20 @@
           }
         }
 
+        addPartButton.addEventListener("click", function () {
+          var val = partInput.value;
+          if (val === "") return;
+          if (!partDropdown.querySelector('option[value="' + val + '"]')) {
+            var opt = document.createElement("option");
+            opt.value = val;
+            opt.text = "Part " + val;
+            partDropdown.appendChild(opt);
+          }
+          partDropdown.value = val;
+          selectedPartLabel = val;
+          partInput.value = "";
+        });
+
         function updateNewPointsFile(action, data) {
           fetch("/update_points/", {
             method: "POST",
@@ -949,6 +974,7 @@
           selectedTraceIndex = null;
           selectedPointIndex = null;
           selectedX = selectedY = selectedZ = null;
+          selectedIsCustom = false;
           // clear arrow-point drawing state if any
           arrowPoints = [];
           isDrawingArrow = false;
@@ -964,19 +990,25 @@
               return response.json();
             })
             .then(function (jsonData) {
-              var dataEntry = jsonData[0],
-                coordinates = dataEntry.coordinates,
-                partLabels = dataEntry.part_label;
-              // Group loaded data by part.
+              var dataEntry = jsonData[0] || {},
+                coordinates = dataEntry.coordinates || [],
+                partLabels = dataEntry.part_label || [];
+              // Group loaded data by part (defensive for length mismatch).
               var groups = {};
-              partLabels.forEach(function (label, i) {
+              var len = Math.min(coordinates.length, partLabels.length);
+              for (var i = 0; i < len; i++) {
+                var label = partLabels[i];
+                var coord = coordinates[i] || [];
                 if (!(label in groups)) {
-                  groups[label] = { x: [], y: [], z: [] };
+                  groups[label] = { x: [], y: [], z: [], coords: [] };
                 }
-                groups[label].x.push(coordinates[i][0]);
-                groups[label].y.push(coordinates[i][1]);
-                groups[label].z.push(coordinates[i][2]);
-              });
+                if (coord.length >= 3) {
+                  groups[label].x.push(coord[0]);
+                  groups[label].y.push(coord[1]);
+                  groups[label].z.push(coord[2]);
+                  groups[label].coords.push(coord);
+                }
+              }
 
               var availableParts = Object.keys(groups).sort(function (a, b) {
                 return parseInt(a) - parseInt(b);
@@ -987,11 +1019,13 @@
               var traces = [];
               loadedPartTraceIndex = {};
               loadedOrigCount = {};
+              loadedCoordsByTrace = {};
               availableParts.forEach(function (part) {
                 var traceIndex = traces.length;
                 loadedPartTraceIndex[part] = traceIndex;
                 var origCount = groups[part].x.length;
                 loadedOrigCount[traceIndex] = origCount;
+                loadedCoordsByTrace[traceIndex] = groups[part].coords || [];
                 traces.push({
                   x: groups[part].x,
                   y: groups[part].y,
@@ -1243,50 +1277,44 @@
 
                   // Otherwise, start arrow-drawing or point-selection
                   var isNew = pt.curveNumber === newPointsTraceIndex;
-                  var isLoadedCustom =
-                    curve < newPointsTraceIndex &&
-                    idx >= loadedOrigCount[curve];
+                  var isLoadedCustom = false;
+                  if (curve < newPointsTraceIndex) {
+                    var coordsForTrace = loadedCoordsByTrace[curve] || [];
+                    var coordEntry = coordsForTrace[idx] || [];
+                    var flaggedCustom = Array.isArray(coordEntry) && coordEntry.length >= 4 && coordEntry[3] === "custom";
+                    isLoadedCustom = (idx >= (loadedOrigCount[curve] || 0)) || flaggedCustom;
+                  }
                   var isCustomPoint = isNew || isLoadedCustom;
 
-                  if (isCustomPoint) {
-                    // select custom point for delete/reassign
-                    selectedTraceIndex = curve;
-                    selectedPointIndex = idx;
-                    selectedX = pt.x;
-                    selectedY = pt.y;
-                    selectedZ = pt.z;
-                    showStatus(
-                      "Custom point selected. You can delete, reassign, or draw arrows."
-                    );
+                  // Mark current selection (both custom and non-custom can now be reassigned via set_label)
+                  selectedTraceIndex = curve;
+                  selectedPointIndex = idx;
+                  selectedX = pt.x;
+                  selectedY = pt.y;
+                  selectedZ = pt.z;
+                  selectedIsCustom = isCustomPoint;
 
-                    if (isLoadedCustom) {
-                      for (var part in loadedPartTraceIndex) {
-                        if (loadedPartTraceIndex[part] === curve) {
-                          partDropdown.value = part;
-                          selectedPartLabel = part;
-                          break;
-                        }
+                  if (isLoadedCustom) {
+                    for (var part in loadedPartTraceIndex) {
+                      if (loadedPartTraceIndex[part] === curve) {
+                        partDropdown.value = part;
+                        selectedPartLabel = part;
+                        break;
                       }
                     }
+                  }
 
-                    // initiate arrow drawing
-                    if (arrowPoints.length === 0) {
-                      arrowPoints.push(currentPt);
-                      isDrawingArrow = true;
-                    }
+                  // Arrow drawing UX remains: start arrow on first click
+                  if (arrowPoints.length === 0) {
+                    arrowPoints.push(currentPt);
+                    isDrawingArrow = true;
+                    showStatus(
+                      isCustomPoint
+                        ? "Custom point selected. Click another point to draw arrow or assign."
+                        : "Point selected. Click another point to draw arrow or assign using set label."
+                    );
                   } else {
-                    // loaded point -> arrow start
-                    if (arrowPoints.length === 0) {
-                      arrowPoints.push(currentPt);
-                      isDrawingArrow = true;
-                      showStatus(
-                        "First point selected for arrow. Click another point to complete the arrow."
-                      );
-                    } else {
-                      showStatus(
-                        "Original loaded point; only usable for drawing arrows."
-                      );
-                    }
+                    // second click handled at top when arrowPoints.length === 1
                   }
                 });
 
@@ -1358,8 +1386,20 @@
                     }
                     var newPart = selectedPartLabel;
                     if (!loadedPartTraceIndex.hasOwnProperty(newPart)) {
-                      showStatus("Selected part not found.");
-                      return;
+                      // If this is a new part, create an empty trace for it
+                      loadedPartTraceIndex[newPart] = viz.data.length;
+                      loadedOrigCount[viz.data.length] = 0;
+                      loadedCoordsByTrace[viz.data.length] = [];
+                      viz.data.push({
+                        x: [],
+                        y: [],
+                        z: [],
+                        mode: "markers",
+                        type: "scatter3d",
+                        name: "Part " + newPart,
+                        marker: { size: 5, opacity: 0.7, color: getColorForPart(newPart) },
+                        hoverinfo: "x+y+z",
+                      });
                     }
                     var targetTraceIndex = loadedPartTraceIndex[newPart];
                     var targetTrace = viz.data[targetTraceIndex];
@@ -1392,7 +1432,7 @@
                           showStatus(
                             "Custom point assigned to Part " + newPart + "."
                           );
-                          updateNewPointsFile("reassign", {
+                          updateNewPointsFile(selectedIsCustom ? "reassign" : "set_label", {
                             cls_label: classDropdown.value,
                             batch_num: batchDropdown.value,
                             x: selectedX,
@@ -1421,7 +1461,7 @@
                               newPart +
                               "."
                           );
-                          updateNewPointsFile("reassign", {
+                          updateNewPointsFile(selectedIsCustom ? "reassign" : "set_label", {
                             cls_label: classDropdown.value,
                             batch_num: batchDropdown.value,
                             x: selectedX,
