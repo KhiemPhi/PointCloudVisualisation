@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bitsi_slicer"
+version = "0.1.0"
+description = "Slicing module for point cloud objects using oriented bounding boxes and geometric conditions"
+readme = "README.md"
+authors = [
+    { name = "Khiem Phi", email = "kphi@cs.stonybrook.edu" }
+]
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.21",
+    "open3d>=0.18",
+    "networkx"
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/bitsi-slicer"
+Issues = "https://github.com/yourusername/bitsi-slicer/issues"
