@@ -36,6 +36,18 @@
           <label for="batch-dropdown">Batch</label>
           <select id="batch-dropdown" class="dropdown"></select>
         </div>
+
+        <!-- ADDED: manual BITSI controls.
+             User explicitly chooses single-object or multi-object segmentation. -->
+        <!-- ADDED: manual BITSI controls.
+             User explicitly chooses single-object or multi-object segmentation. -->
+        <div class="dropdown-wrapper" style="min-width: 320px;">
+          <label>BITSI Segmentation</label>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button id="bitsi-single-button" type="button" style="padding: 8px 12px; border:none; border-radius:5px; background:#6f42c1; color:white; cursor:pointer;">Segment Single Object</button>
+            <button id="bitsi-multi-button" type="button" style="padding: 8px 12px; border:none; border-radius:5px; background:#fd7e14; color:white; cursor:pointer;">Segment Multi Object</button>
+          </div>
+        </div>
         <div class="mode-toggle">
           <label>
             <input type="radio" name="mode" value="segment" />
@@ -459,6 +471,83 @@
         return isNaN(idx) ? colors[0] : colors[idx];
       }
 
+
+      function hasEntryColors(entry) {
+        return Array.isArray(entry.colors) &&
+              Array.isArray(entry.coordinates) &&
+              entry.colors.length === entry.coordinates.length;
+      }
+
+      function rgbArrayToCss(rgb) {
+        if (!Array.isArray(rgb) || rgb.length < 3) return "#1f77b4";
+        return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+      }
+
+      function getAutoRanges(coordinates) {
+        if (!coordinates || !coordinates.length) {
+          return { xRange: [-1, 1], yRange: [-1, 1], zRange: [-1, 1] };
+        }
+
+        let xMin = Infinity, xMax = -Infinity;
+        let yMin = Infinity, yMax = -Infinity;
+        let zMin = Infinity, zMax = -Infinity;
+
+        for (let i = 0; i < coordinates.length; i++) {
+          const p = coordinates[i];
+          if (!p || p.length < 3) continue;
+          const x = p[0], y = p[1], z = p[2];
+          if (x < xMin) xMin = x;
+          if (x > xMax) xMax = x;
+          if (y < yMin) yMin = y;
+          if (y > yMax) yMax = y;
+          if (z < zMin) zMin = z;
+          if (z > zMax) zMax = z;
+        }
+
+        const padX = Math.max((xMax - xMin) * 0.05, 0.05);
+        const padY = Math.max((yMax - yMin) * 0.05, 0.05);
+        const padZ = Math.max((zMax - zMin) * 0.05, 0.05);
+
+        return {
+          xRange: [xMin - padX, xMax + padX],
+          yRange: [yMin - padY, yMax + padY],
+          zRange: [zMin - padZ, zMax + padZ]
+        };
+      }
+
+      function groupEntryByPart(entry) {
+        const coordinates = entry.coordinates || [];
+        const labels = entry.part_label || [];
+        const colors = hasEntryColors(entry) ? entry.colors : null;
+
+        const groups = {};
+        const n = coordinates.length;
+
+        for (let i = 0; i < n; i++) {
+          const coord = coordinates[i];
+          if (!coord || coord.length < 3) continue;
+
+          const lbl = (i < labels.length) ? labels[i] : 0;
+
+          if (!groups[lbl]) {
+            groups[lbl] = { x: [], y: [], z: [], coords: [], colors: [] };
+          }
+
+          groups[lbl].x.push(coord[0]);
+          groups[lbl].y.push(coord[1]);
+          groups[lbl].z.push(coord[2]);
+          groups[lbl].coords.push(coord);
+
+          if (colors) {
+            groups[lbl].colors.push(rgbArrayToCss(colors[i]));
+          } else {
+            groups[lbl].colors.push(getColorForPart(lbl));
+          }
+        }
+
+        return groups;
+      }
+
       // ----------------------------------------------------------------
       // Screw Mode Implementation (fully self‐contained helpers)
       // ----------------------------------------------------------------
@@ -717,14 +806,7 @@
                 };
 
                 // 2) group coordinates by part_label and build traces
-                const groups = {};
-                labels.forEach((lbl, i) => {
-                  if (!groups[lbl]) groups[lbl] = { x:[], y:[], z:[] };
-                  const [x,y,z] = pts[i];
-                  groups[lbl].x.push(x);
-                  groups[lbl].y.push(y);
-                  groups[lbl].z.push(z);
-                });
+                const groups = groupEntryByPart(entry);
                 const traces = Object.keys(groups).sort((a,b)=>a-b).map(lbl => ({
                   x: groups[lbl].x,
                   y: groups[lbl].y,
@@ -732,7 +814,7 @@
                   mode: "markers",
                   type: "scatter3d",
                   name: "Part " + lbl,
-                  marker: { size:5, opacity:0.8, color:getColorForPart(lbl) },
+                  marker: { size:5, opacity:0.8, color:groups[lbl].colors },
                   hoverinfo: "x+y+z"
                 }));
 
@@ -1820,14 +1902,7 @@
         const pts = entry.coordinates;
         const labels = entry.part_label;
         const circles = entry.circles || [];
-        const groups = {};
-        labels.forEach((lbl, i) => {
-          if (!groups[lbl]) groups[lbl] = { x: [], y: [], z: [] };
-          const [x, y, z] = pts[i];
-          groups[lbl].x.push(x);
-          groups[lbl].y.push(y);
-          groups[lbl].z.push(z);
-        });
+        const groups = groupEntryByPart(entry);
 
         const traces = Object.keys(groups)
           .sort((a, b) => a - b)
@@ -1838,7 +1913,7 @@
             mode: "markers",
             type: "scatter3d",
             name: "Part " + lbl,
-            marker: { size: 5, opacity: 0.8, color: getColorForPart(lbl) },
+            marker: { size: 5, opacity: 0.8, color: groups[lbl].colors },
             hoverinfo: "x+y+z",
           }));
 
@@ -2474,16 +2549,8 @@
 
               // Calculate cup center for proper handle positioning
               cupCenter = calculateCupCenter(pts);
-             
-              const groups = {};
-             
-              labels.forEach((lbl, i) => {
-                if (!groups[lbl]) groups[lbl] = { x: [], y: [], z: [] };
-                const [x, y, z] = pts[i];
-                groups[lbl].x.push(x);
-                groups[lbl].y.push(y);
-                groups[lbl].z.push(z);
-              });
+
+              const groups = groupEntryByPart(entry);
 
               const traces = Object.keys(groups)
                 .sort((a, b) => a - b)
@@ -2494,7 +2561,7 @@
                 mode: "markers",
                 type: "scatter3d",
                 name: "Part " + lbl,
-                marker: { size: 5, opacity: 0.8, color: getColorForPart(lbl) },
+                marker: { size: 5, opacity: 0.8, color: groups[lbl].colors },
                   hoverinfo: "x+y+z",
                 }));
 
@@ -2790,18 +2857,8 @@
             .then((json) => {
               const entry = json[0];
               const pts = entry.coordinates || [];
-              const labels = entry.part_label || [];
               savedAnnotatedSegments = entry.annotated_segments || [];
-              const groups = {};
-              labels.forEach((lbl, idx) => {
-                if (!groups[lbl]) {
-                  groups[lbl] = { x: [], y: [], z: [] };
-                }
-                const [x, y, z] = pts[idx];
-                groups[lbl].x.push(x);
-                groups[lbl].y.push(y);
-                groups[lbl].z.push(z);
-              });
+              const groups = groupEntryByPart(entry);
 
               const traces = Object.keys(groups)
                 .sort((a, b) => a - b)
@@ -2812,7 +2869,7 @@
                   mode: "markers",
                   type: "scatter3d",
                   name: "Part " + lbl,
-                  marker: { size: 5, opacity: 0.8, color: getColorForPart(lbl) },
+                  marker: { size: 5, opacity: 0.8, color: groups[lbl].colors },
                   hoverinfo: "x+y+z",
                 }));
 
@@ -3064,6 +3121,54 @@
         updateBatches();
       }
       
+      
+
+      // ADDED: send the selected class/batch to the backend and run BITSI in the chosen mode
+      async function runBitsiSegmentation(mode) {
+        const cls = document.getElementById("class-dropdown").value;
+        const batch = document.getElementById("batch-dropdown").value;
+        const singleBtn = document.getElementById("bitsi-single-button");
+        const multiBtn = document.getElementById("bitsi-multi-button");
+        if (!cls || !batch) {
+          statusMsg.textContent = "Select an object and batch first.";
+          return;
+        }
+        singleBtn.disabled = true;
+        multiBtn.disabled = true;
+        singleBtn.style.opacity = "0.6";
+        multiBtn.style.opacity = "0.6";
+        statusMsg.textContent = mode === "single"
+          ? "Running BITSI single-object segmentation..."
+          : "Running BITSI multi-object segmentation...";
+        try {
+          const response = await fetch(`/segment/${mode}/`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cls_label: cls, batch_num: batch })
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(result.message || result.error || `Request failed (${response.status})`);
+          }
+          statusMsg.textContent = `${result.message || "Segmentation finished."} Segments: ${result.num_segments}.`;
+          const activeMode = document.querySelector('input[name="mode"]:checked')?.value;
+          if (activeMode === "segment") initSegmentMode();
+          else if (activeMode === "screw") initScrewMode();
+          else if (activeMode === "ransac") initRANSACMode();
+          else if (activeMode === "handle") initHandleMode();
+          else if (activeMode === "annotated-segment") initAnnotatedSegmentMode();
+          else location.reload();
+        } catch (err) {
+          console.error(err);
+          statusMsg.textContent = err.message || "BITSI segmentation failed.";
+        } finally {
+          singleBtn.disabled = false;
+          multiBtn.disabled = false;
+          singleBtn.style.opacity = "1";
+          multiBtn.style.opacity = "1";
+        }
+      }
+
       // ----------------------------------------------------------------
       // Mode Toggle Wiring
       // ----------------------------------------------------------------
@@ -3079,6 +3184,9 @@
 
       // Initialize on page load
       window.addEventListener("DOMContentLoaded", () => {
+        // ADDED: wire the new BITSI buttons to the backend endpoints
+        document.getElementById("bitsi-single-button")?.addEventListener("click", () => runBitsiSegmentation("single"));
+        document.getElementById("bitsi-multi-button")?.addEventListener("click", () => runBitsiSegmentation("multi"));
         const m = document.querySelector('input[name="mode"]:checked').value;
         if (m === "screw") initScrewMode();
         else initSegmentMode();

@@ -1,3 +1,11 @@
 ckpt
 data/
 segmentation_viz/.venv
+bitsi_main/.DS_Store
+segmentation_viz/visualization/templates/visualization/.DS_Store
+.DS_Store
+/segmentation_viz/segmentation_viz/__pycache__
+/segmentation_viz/visualization/__pycache__
+/segmentation_viz/segmentation_viz/__pycache__
+segmentation_viz/segmentation_viz/__pycache__/__init__.cpython-311.pyc
+/segmentation_viz/segmentation_viz/__pycache__

@@ -4,6 +4,9 @@ from django.conf import settings
 from django.http import JsonResponse, HttpResponseBadRequest, Http404, HttpResponse
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import csrf_exempt
+
+# ADDED: bridge function that calls the vendored BITSI code and returns labels
+from .bitsi_bridge import apply_bitsi_segmentation_to_entry
 from django.utils.text import get_valid_filename
 from datetime import datetime
 
@@ -28,8 +31,8 @@ def _derive_cls_batch(stem: str):
     return cls_label, batch_num
 
 
-def _read_ply_coordinates(ply_path):
-    """Load XYZ coordinates from an ASCII .ply file. Extra properties are ignored."""
+def _read_ply_points(ply_path):
+    """Load XYZ coordinates and optional RGB colors from an ASCII .ply file."""
     with open(ply_path, 'r') as f:
         first = f.readline().strip()
         if first != 'ply':
@@ -41,40 +44,60 @@ def _read_ply_coordinates(ply_path):
 
         vertex_count = 0
         prop_names = []
+
         while True:
             line = f.readline()
             if not line:
                 break
             line = line.strip()
+
             if line.startswith('element vertex'):
                 parts = line.split()
                 if len(parts) >= 3:
                     vertex_count = int(parts[2])
+
             elif line.startswith('property'):
                 tokens = line.split()
                 if len(tokens) >= 3:
                     prop_names.append(tokens[-1])
+
             elif line == 'end_header':
                 break
 
         idx_x = prop_names.index('x') if 'x' in prop_names else None
         idx_y = prop_names.index('y') if 'y' in prop_names else None
         idx_z = prop_names.index('z') if 'z' in prop_names else None
+
         if None in (idx_x, idx_y, idx_z):
             raise ValueError('PLY is missing x/y/z properties')
 
+        idx_r = prop_names.index('red') if 'red' in prop_names else None
+        idx_g = prop_names.index('green') if 'green' in prop_names else None
+        idx_b = prop_names.index('blue') if 'blue' in prop_names else None
+
         coords = []
+        colors = []
+
         for _ in range(vertex_count):
             row = f.readline()
             if not row:
                 break
             vals = row.strip().split()
+
             coords.append([
                 float(vals[idx_x]),
                 float(vals[idx_y]),
                 float(vals[idx_z]),
             ])
-        return coords
+
+            if None not in (idx_r, idx_g, idx_b):
+                colors.append([
+                    int(float(vals[idx_r])),
+                    int(float(vals[idx_g])),
+                    int(float(vals[idx_b])),
+                ])
+
+        return coords, colors
 
 
 def _write_ply_with_labels(ply_path, coordinates, labels):
@@ -100,6 +123,30 @@ def _write_ply_with_labels(ply_path, coordinates, labels):
         f.write('\n'.join(lines))
 
 
+
+
+# ADDED: save updated part labels back into the JSON entry and, if present, the PLY file
+def _save_entry_labels(cls_label, batch_num, entry):
+    static_dir = os.path.join(settings.BASE_DIR, 'static')
+    json_path = os.path.join(static_dir, f"{cls_label}_{batch_num}_points.json")
+    payload = [entry]
+    with open(json_path, 'w') as f:
+        json.dump(payload, f, indent=2)
+
+    ply_path = entry.get('source_ply')
+    if ply_path:
+        if not os.path.isabs(ply_path):
+            ply_path = os.path.join(settings.BASE_DIR, ply_path)
+    else:
+        ply_path = os.path.join(static_dir, f"{cls_label}_{batch_num}.ply")
+
+    if os.path.exists(ply_path):
+        coords = []
+        for coord in entry.get('coordinates', []):
+            if isinstance(coord, list) and len(coord) >= 3:
+                coords.append([coord[0], coord[1], coord[2]])
+        _write_ply_with_labels(ply_path, coords, entry.get('part_label', []))
+
 def _ensure_json_from_ply(cls_label, batch_num):
     """Create a JSON representation if a matching .ply exists and JSON does not."""
     static_dir = os.path.join(settings.BASE_DIR, 'static')
@@ -112,9 +159,10 @@ def _ensure_json_from_ply(cls_label, batch_num):
     if not os.path.exists(ply_path):
         return None
 
-    coords_raw = _read_ply_coordinates(ply_path)
-    # Treat imported PLY points as custom so they can be reassigned via the existing UI flow.
+    coords_raw, colors_raw = _read_ply_points(ply_path)
+
     coords = [[x, y, z, "custom"] for x, y, z in coords_raw]
+
     content = [{
         "coordinates": coords,
         "part_label": [-1 for _ in coords],
@@ -122,6 +170,9 @@ def _ensure_json_from_ply(cls_label, batch_num):
         "batch_num": batch_num,
         "source_ply": os.path.relpath(ply_path, settings.BASE_DIR),
     }]
+
+    if colors_raw and len(colors_raw) == len(coords):
+        content[0]["colors"] = colors_raw
 
     with open(json_path, 'w') as f:
         json.dump(content, f, indent=2)
@@ -191,6 +242,49 @@ def index(request):
     return render(request, 'visualization/index.html', {
         'classes': classes,
         'mapping_json': mapping_json,
+    })
+
+
+
+# ADDED: POST API called by the two new UI buttons.
+# It loads the selected point cloud, runs BITSI in the requested mode,
+# saves the updated labels, and returns a small JSON response.
+@csrf_exempt
+@require_POST
+def run_bitsi_segmentation(request, mode):
+    if mode not in {'single', 'multi'}:
+        return HttpResponseBadRequest('Invalid segmentation mode.')
+
+    try:
+        payload = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        return HttpResponseBadRequest('Invalid JSON payload.')
+
+    cls_label = str(payload.get('cls_label', '')).strip()
+    batch_num = str(payload.get('batch_num', '')).strip()
+    if not cls_label or not batch_num:
+        return HttpResponseBadRequest('cls_label and batch_num are required.')
+
+    try:
+        data = _ensure_json_from_ply(cls_label, batch_num)
+    except Exception as exc:
+        return HttpResponseBadRequest(str(exc))
+
+    if not data:
+        return HttpResponseBadRequest('Point cloud file not found.')
+
+    entry = data[0]
+    try:
+        updated_entry, meta = apply_bitsi_segmentation_to_entry(entry, mode=mode)
+        _save_entry_labels(cls_label, batch_num, updated_entry)
+    except Exception as exc:
+        return HttpResponseBadRequest(f'BITSI segmentation failed: {exc}')
+
+    return JsonResponse({
+        'ok': True,
+        'mode': mode,
+        'num_segments': meta.get('num_segments', 0),
+        'message': f"BITSI {mode}-object segmentation finished."
     })
 
 def list_point_cloud_files(request):
