@@ -1,11 +1,38 @@
-ckpt
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual environments ─────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ── Environment / secrets ────────────────────────────────────────────────────
+.env
+*.env
+
+# ── Django ───────────────────────────────────────────────────────────────────
+segmentation_viz/db.sqlite3
+segmentation_viz/staticfiles/
+
+# ── Point-cloud data files (large, runtime-generated; not source code) ───────
+# Store separately (e.g. DVC, Git LFS, or a shared drive).
+segmentation_viz/static/*.json
+segmentation_viz/static/*.ply
+segmentation_viz/static/merge_undo/
+
+# ── BITSI artefacts ──────────────────────────────────────────────────────────
+bitsi_main/*.ply
+bitsi_main/*.pth
+ckpt/
 data/
-segmentation_viz/.venv
-bitsi_main/.DS_Store
-segmentation_viz/visualization/templates/visualization/.DS_Store
+
+# ── macOS ────────────────────────────────────────────────────────────────────
 .DS_Store
-/segmentation_viz/segmentation_viz/__pycache__
-/segmentation_viz/visualization/__pycache__
-/segmentation_viz/segmentation_viz/__pycache__
-segmentation_viz/segmentation_viz/__pycache__/__init__.cpython-311.pyc
-/segmentation_viz/segmentation_viz/__pycache__
+**/.DS_Store

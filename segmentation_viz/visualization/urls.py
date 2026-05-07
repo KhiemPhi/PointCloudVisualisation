@@ -16,4 +16,9 @@ urlpatterns = [
     # ADDED: endpoint used by the new BITSI buttons in the UI.
     # mode is expected to be either 'single' or 'multi'.
     path('segment/<str:mode>/', views.run_bitsi_segmentation, name='run_bitsi_segmentation'),
+
+    # Merge undo endpoints.
+    path('api/merge_undo_status/<str:cls_label>/<str:batch_num>/',
+         views.merge_undo_status, name='merge_undo_status'),
+    path('undo_merge/', views.undo_merge, name='undo_merge'),
 ]

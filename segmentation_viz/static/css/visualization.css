@@ -188,3 +188,184 @@ select.dropdown:focus {
 .help-tooltip.visible {
   display: block;
 }
+
+/* Top bar: Browse + Merge parts */
+.top-bar-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.top-bar-link {
+  display: inline-block;
+  padding: 8px 16px;
+  background-color: #343a40;
+  color: #fff;
+  border-radius: 4px;
+  text-decoration: none;
+}
+.top-bar-link:hover {
+  background-color: #23272b;
+  color: #fff;
+}
+.merge-parts-wrap {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.merge-parts-toggle {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  background-color: #20c997;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+}
+.merge-parts-toggle:hover {
+  background-color: #1aa179;
+}
+.merge-parts-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 8px;
+  min-width: 260px;
+  max-width: 320px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  text-align: left;
+}
+.merge-parts-panel-title {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 8px;
+  color: #333;
+}
+/* Panel header: title + live counter */
+.merge-parts-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.merge-select-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: #20c997;
+  background: rgba(32, 201, 151, 0.12);
+  padding: 2px 8px;
+  border-radius: 10px;
+  min-width: 20px;
+  text-align: center;
+}
+
+/* Card grid container */
+.merge-parts-checkboxes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  max-height: 220px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  padding: 2px;        /* leave room for the focus ring */
+}
+
+/* Individual part card */
+.merge-part-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 2px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fafafa;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s, background 0.15s, transform 0.1s, box-shadow 0.15s;
+  min-width: 0;
+}
+.merge-part-card:hover {
+  border-color: #bbb;
+  background: #f0f0f0;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+}
+.merge-part-card.selected {
+  border-color: #20c997;
+  background: rgba(32, 201, 151, 0.08);
+  box-shadow: 0 0 0 1px #20c997 inset;
+}
+.merge-part-card.selected:hover {
+  border-color: #1aa179;
+}
+
+/* Coloured dot — colour set inline by JS from getColorForPart() */
+.merge-part-dot {
+  flex-shrink: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.12);
+}
+
+/* Part name text */
+.merge-part-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.merge-parts-renumber-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+.merge-parts-apply {
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 4px;
+  background-color: #20c997;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+}
+.merge-parts-apply:hover:not(:disabled) {
+  background-color: #1aa179;
+}
+.merge-parts-apply:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+
+.merge-undo-btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  background-color: #fd7e14;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.2s ease;
+}
+.merge-undo-btn:hover:not(:disabled) {
+  background-color: #e06c0d;
+}
+.merge-undo-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

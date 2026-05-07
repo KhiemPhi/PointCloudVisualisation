@@ -1,5 +1,5 @@
 from django.shortcuts import render
-import os, glob, json, math, re
+import os, glob, json, math, re, copy
 from django.conf import settings
 from django.http import JsonResponse, HttpResponseBadRequest, Http404, HttpResponse
 from django.views.decorators.http import require_POST
@@ -10,7 +10,7 @@ from .bitsi_bridge import apply_bitsi_segmentation_to_entry
 from django.utils.text import get_valid_filename
 from datetime import datetime
 
-POINT_CLOUD_NAME_RE = re.compile(r'^[A-Za-z0-9]+_[0-9]+_points\.json$')
+POINT_CLOUD_NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_]*_[0-9]+_points\.json$')
 POINT_CLOUD_PLY_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_]*_[0-9]+\.ply$')
 
 
@@ -147,6 +147,51 @@ def _save_entry_labels(cls_label, batch_num, entry):
                 coords.append([coord[0], coord[1], coord[2]])
         _write_ply_with_labels(ply_path, coords, entry.get('part_label', []))
 
+
+def _merge_undo(cls_label, batch_num, op, content=None):
+    """Snapshot helper for merge undo.
+
+    ops:
+      'save'    – persist *content* (the full JSON list) as a snapshot.
+      'restore' – return the snapshot as a parsed list and delete the file.
+      'exists'  – return True if a snapshot is present, False otherwise.
+
+    The snapshot directory/path is resolved by the nested ``_path`` closure;
+    nothing about the path is exported from this function.
+    """
+    def _path():
+        d = os.path.join(
+            settings.BASE_DIR, 'static', 'merge_undo',
+            f'{cls_label}_{batch_num}'
+        )
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, 'snapshot.json')
+
+    if op == 'exists':
+        return os.path.exists(_path())
+
+    if op == 'save':
+        if content is None:
+            raise ValueError('_merge_undo save requires content')
+        with open(_path(), 'w') as f:
+            json.dump(content, f, indent=2)
+        return True
+
+    if op == 'restore':
+        p = _path()
+        if not os.path.exists(p):
+            return None
+        with open(p, 'r') as f:
+            data = json.load(f)
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+        return data
+
+    raise ValueError(f'Unknown _merge_undo op: {op!r}')
+
+
 def _ensure_json_from_ply(cls_label, batch_num):
     """Create a JSON representation if a matching .ply exists and JSON does not."""
     static_dir = os.path.join(settings.BASE_DIR, 'static')
@@ -161,7 +206,9 @@ def _ensure_json_from_ply(cls_label, batch_num):
 
     coords_raw, colors_raw = _read_ply_points(ply_path)
 
-    coords = [[x, y, z, "custom"] for x, y, z in coords_raw]
+    # PLY points are original data — do NOT tag them as "custom".
+    # The "custom" tag is reserved for user-added points only.
+    coords = [[x, y, z] for x, y, z in coords_raw]
 
     content = [{
         "coordinates": coords,
@@ -189,10 +236,21 @@ def _is_valid_ply_filename(file_name: str) -> bool:
 
 
 def get_points_json(request, cls_label, batch_num):
+    # Guard against path-traversal: both parameters must be safe identifiers.
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_]*', cls_label) or \
+            not re.fullmatch(r'[0-9]+', batch_num):
+        return HttpResponseBadRequest("Invalid parameters")
     file_path = os.path.join(settings.BASE_DIR, 'static', f"{cls_label}_{batch_num}_points.json")
     if os.path.exists(file_path):
-        with open(file_path, 'r') as f:
-            data = json.load(f)
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+        except json.JSONDecodeError as exc:
+            return JsonResponse(
+                {"error": f"Point cloud file is corrupt and cannot be parsed ({exc}). "
+                          f"Delete or regenerate {os.path.basename(file_path)}."},
+                status=422,
+            )
     else:
         try:
             data = _ensure_json_from_ply(cls_label, batch_num)
@@ -446,6 +504,83 @@ def coordinates_match(coord, x, y, z, tol=1e-6):
             math.isclose(coord[1], y, abs_tol=tol) and 
             math.isclose(coord[2], z, abs_tol=tol))
 
+
+def _apply_merge_parts(point_obj, data):
+    """Merge selected part labels in ``point_obj['part_label']`` in place.
+
+    Expects ``data`` with ``merge_labels`` (list of ints), optional ``target_label``,
+    optional ``renumber`` (default True). On success returns ``None``; on validation
+    failure returns an error string suitable for ``HttpResponseBadRequest``.
+    """
+
+    def _to_int_label(v):
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _labels_present_in_data(pls):
+        present = set()
+        for v in pls:
+            iv = _to_int_label(v)
+            if iv is not None:
+                present.add(iv)
+        return present
+
+    def _coerce_renumber(val, default=True):
+        if isinstance(val, str):
+            return val.lower() in ("1", "true", "yes", "on")
+        if val is None:
+            return default
+        return bool(val)
+
+    merge_labels_raw = data.get("merge_labels")
+    if not merge_labels_raw or not isinstance(merge_labels_raw, (list, tuple)):
+        return "merge_labels must be a non-empty list"
+    try:
+        merge_labels = sorted({int(x) for x in merge_labels_raw})
+    except (TypeError, ValueError):
+        return "merge_labels must be a list of integers"
+    if len(merge_labels) < 2:
+        return "Select at least two part labels to merge"
+
+    pls = point_obj.get("part_label")
+    if not isinstance(pls, list) or len(pls) == 0:
+        return "Missing or empty part_label"
+
+    present = _labels_present_in_data(pls)
+    for lbl in merge_labels:
+        if lbl not in present:
+            return f"Part label {lbl} not present in current data"
+
+    target_label = data.get("target_label")
+    if target_label is None:
+        target_label = min(merge_labels)
+    else:
+        try:
+            target_label = int(target_label)
+        except (TypeError, ValueError):
+            return "target_label must be an integer"
+
+    merge_set = set(merge_labels)
+    for i in range(len(pls)):
+        cur = _to_int_label(pls[i])
+        if cur is not None and cur in merge_set:
+            pls[i] = target_label
+
+    if _coerce_renumber(data.get("renumber"), True):
+        uniq_sorted = sorted(
+            {_to_int_label(v) for v in pls if _to_int_label(v) is not None}
+        )
+        mapping = {old: new for new, old in enumerate(uniq_sorted)}
+        for i in range(len(pls)):
+            cur = _to_int_label(pls[i])
+            if cur is not None and cur in mapping:
+                pls[i] = mapping[cur]
+
+    return None
+
+
 @csrf_exempt  # For demonstration. In production, use proper CSRF handling.
 @require_POST
 def update_points(request):
@@ -524,19 +659,40 @@ def update_points(request):
       → Searches for a custom point with matching [x,y,z] (in an array of 4 elements) and deletes it
          from both "coordinates" and "part_label".
 
+    For "merge_parts":
+      {
+         "action": "merge_parts",
+         "data": {
+             "cls_label": <str>,
+             "batch_num": <str>,
+             "merge_labels": [<int>, ...],
+             "target_label": <int> (optional; default = min(merge_labels)),
+             "renumber": <bool> (optional; default True — map labels to contiguous 0..K-1)
+         }
+      }
+      → Sets part_label to target_label for every point whose label is in merge_labels.
+         If renumber is True, remaps all distinct labels to sorted order 0..K-1.
+
         If a matching .ply file exists (either noted in "source_ply" or named <cls>_<batch>.ply), it will
         be rewritten in ASCII format with an extra integer label column so edited labels stay in sync.
     """
     try:
         payload = json.loads(request.body)
         action = payload.get("action")
+        if not action:
+            return HttpResponseBadRequest("Missing 'action' field")
         data = payload.get("data")
-        
+        if not isinstance(data, dict):
+            return HttpResponseBadRequest("Missing or invalid 'data' field")
+
         cls_label = data.get("cls_label")
         batch_num = data.get("batch_num")
         if not cls_label or not batch_num:
             return HttpResponseBadRequest("Missing cls_label or batch_num")
-        
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_]*', str(cls_label)) or \
+                not re.fullmatch(r'[0-9]+', str(batch_num)):
+            return HttpResponseBadRequest("Invalid cls_label or batch_num")
+
         file_path = os.path.join(settings.BASE_DIR, 'static', f"{cls_label}_{batch_num}_points.json")
         if not os.path.exists(file_path):
             return HttpResponseBadRequest("File not found")
@@ -565,7 +721,7 @@ def update_points(request):
                 return HttpResponseBadRequest("Missing data for reassign")
             try:
                 new_part_label = int(new_part_label)
-            except:
+            except (TypeError, ValueError):
                 return HttpResponseBadRequest("new_part_label must be an integer")
             found_index = None
             for i, coord in enumerate(point_obj["coordinates"]):
@@ -574,6 +730,8 @@ def update_points(request):
                     break
             if found_index is None:
                 return HttpResponseBadRequest("Custom point not found for reassign")
+            if found_index >= len(point_obj.get("part_label", [])):
+                return HttpResponseBadRequest("part_label out of sync with coordinates")
             point_obj["part_label"][found_index] = new_part_label
             # Do not remove the "custom" flag; it should remain to mark it as a custom point.
 
@@ -586,7 +744,7 @@ def update_points(request):
                 return HttpResponseBadRequest("Missing data for set_label")
             try:
                 new_part_label = int(new_part_label)
-            except:
+            except (TypeError, ValueError):
                 return HttpResponseBadRequest("new_part_label must be an integer")
             found_index = None
             for i, coord in enumerate(point_obj["coordinates"]):
@@ -596,6 +754,8 @@ def update_points(request):
                     break
             if found_index is None:
                 return HttpResponseBadRequest("Point not found for set_label")
+            if found_index >= len(point_obj.get("part_label", [])):
+                return HttpResponseBadRequest("part_label out of sync with coordinates")
             point_obj["part_label"][found_index] = new_part_label
             
         elif action == "delete":
@@ -633,16 +793,23 @@ def update_points(request):
             p2 = data.get("p2")
             if not (p1 and p2):
                 return HttpResponseBadRequest("Missing arrow endpoints")
+            deleted = False
             if "arrows" in point_obj:
                 for i, arrow in enumerate(point_obj["arrows"]):
                     # match by coordinates
                     if (coordinates_match(arrow[0], p1["x"], p1["y"], p1["z"]) and
                         coordinates_match(arrow[1], p2["x"], p2["y"], p2["z"])):
                         point_obj["arrows"].pop(i)
+                        deleted = True
                         break
+            if not deleted:
+                return HttpResponseBadRequest("Arrow not found")
                     
         elif action == "add_screw":
             # expects data: x,y,z plus dir_x,dir_y,dir_z each ∈ {-1,0,+1}
+            for key in ("x", "y", "z", "dir_x", "dir_y", "dir_z"):
+                if data.get(key) is None:
+                    return HttpResponseBadRequest(f"Missing screw field: {key}")
             if "screws" not in point_obj:
                 point_obj["screws"] = []
             coords = [
@@ -659,14 +826,15 @@ def update_points(request):
                 point_obj["segments"] = []
             point_obj["segments"].append(coords)
 
-        elif action == "add_circle" :
+        elif action == "add_circle":
             cx = data.get("cx"); cy = data.get("cy")
             cz = data.get("cz"); r = data.get("r")
+            nx = data.get("nx", 0); ny = data.get("ny", 0); nz = data.get("nz", 0)
             if None in (cx, cy, cz, r):
                 return HttpResponseBadRequest("Missing circle parameters")
             if "circles" not in point_obj:
                 point_obj["circles"] = []
-            coords = [cx, cy, cz, r]
+            coords = [cx, cy, cz, nx, ny, nz, r]
             if coords not in point_obj["circles"]:
                 point_obj["circles"].append(coords)
         
@@ -708,9 +876,12 @@ def update_points(request):
             
             handle_coordinates = []
             for i in range(len(pts) - 1):
+                p_a, p_b = pts[i], pts[i + 1]
+                if not all(k in p_a and k in p_b for k in ("x", "y", "z")):
+                    return HttpResponseBadRequest(f"Handle point {i} or {i + 1} missing x/y/z")
                 handle_coordinates.append([
-                    [pts[i]["x"], pts[i]["y"], pts[i]["z"]],
-                    [pts[i + 1]["x"], pts[i + 1]["y"], pts[i + 1]["z"]]
+                    [p_a["x"], p_a["y"], p_a["z"]],
+                    [p_b["x"], p_b["y"], p_b["z"]]
                 ])
             
             handle_data = {
@@ -739,6 +910,15 @@ def update_points(request):
                 "annotated_label": annotated_label
             })
 
+        elif action == "merge_parts":
+            # Snapshot a deep copy before mutating so undo can restore the original state.
+            # copy.deepcopy is required because point_obj is a reference into content[0],
+            # meaning mutations from _apply_merge_parts would otherwise corrupt the snapshot.
+            _merge_undo(cls_label, batch_num, 'save', copy.deepcopy(content))
+            merge_err = _apply_merge_parts(point_obj, data)
+            if merge_err:
+                return HttpResponseBadRequest(merge_err)
+
         else:
             return HttpResponseBadRequest("Unknown action")
         
@@ -761,3 +941,71 @@ def update_points(request):
         return JsonResponse({"status": "success", "data": content})
     except Exception as e:
         return JsonResponse({"status": "error", "message": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Merge undo endpoints
+# ---------------------------------------------------------------------------
+
+def merge_undo_status(request, cls_label, batch_num):
+    """GET – return whether a merge snapshot exists for this cloud.
+
+    Response: { "can_undo": true|false }
+    """
+    can_undo = _merge_undo(cls_label, batch_num, 'exists')
+    return JsonResponse({'can_undo': can_undo})
+
+
+@csrf_exempt
+@require_POST
+def undo_merge(request):
+    """POST – restore the most recent merge snapshot.
+
+    Body: { "cls_label": str, "batch_num": str }
+    Response: { "ok": true } on success, HTTP 400 on failure.
+    """
+    try:
+        payload = json.loads(request.body.decode('utf-8')) if request.body else {}
+    except json.JSONDecodeError:
+        return HttpResponseBadRequest('Invalid JSON payload.')
+
+    cls_label = str(payload.get('cls_label', '')).strip()
+    batch_num = str(payload.get('batch_num', '')).strip()
+    if not cls_label or not batch_num:
+        return HttpResponseBadRequest('cls_label and batch_num are required.')
+
+    restored = _merge_undo(cls_label, batch_num, 'restore')
+    if restored is None:
+        return HttpResponseBadRequest('No merge snapshot found — nothing to undo.')
+
+    # Validate basic structure.
+    if not isinstance(restored, list) or not restored:
+        return HttpResponseBadRequest('Snapshot data is invalid.')
+
+    # Persist the restored JSON.
+    file_path = os.path.join(
+        settings.BASE_DIR, 'static', f'{cls_label}_{batch_num}_points.json'
+    )
+    with open(file_path, 'w') as f:
+        json.dump(restored, f, indent=2)
+
+    # Keep PLY in sync if present.
+    try:
+        point_obj = restored[0]
+        source_ply = point_obj.get('source_ply')
+        if source_ply:
+            ply_path = os.path.join(settings.BASE_DIR, source_ply)
+        else:
+            ply_path = os.path.join(
+                settings.BASE_DIR, 'static', f'{cls_label}_{batch_num}.ply'
+            )
+        if os.path.exists(ply_path):
+            _write_ply_with_labels(
+                ply_path,
+                point_obj.get('coordinates', []),
+                point_obj.get('part_label', []),
+            )
+    except Exception:
+        pass  # JSON is already restored; PLY sync failure is non-fatal.
+
+    return JsonResponse({'ok': True})
